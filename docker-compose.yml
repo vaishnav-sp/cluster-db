@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  # Placeholder for future services
+
+networks:
+  atlasdb-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+volumes:
+  atlasdb-data-1:
+    driver: local
+  atlasdb-data-2:
+    driver: local
+  atlasdb-data-3:
+    driver: local

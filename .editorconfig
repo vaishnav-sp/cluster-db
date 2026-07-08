@@ -1,0 +1,74 @@
+root = true
+
+# Unix-style newlines with a newline ending every file
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+trim_trailing_whitespace = true
+
+# Go files - tabs for indentation
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# YAML files - 2 spaces
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# JSON files - 2 spaces
+[*.json]
+indent_style = space
+indent_size = 2
+
+# Markdown files - 2 spaces
+[*.{md,markdown}]
+indent_style = space
+indent_size = 2
+
+# Shell scripts - 2 spaces
+[*.{sh,bash,zsh}]
+indent_style = space
+indent_size = 2
+
+# Dockerfile - 4 spaces
+[Dockerfile*]
+indent_style = space
+indent_size = 4
+
+# Makefile - tabs required
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+# Protocol Buffers - 2 spaces
+[*.proto]
+indent_style = space
+indent_size = 2
+
+# SQL files - 2 spaces
+[*.sql]
+indent_style = space
+indent_size = 2
+
+# Configuration files - 2 spaces
+[*.{conf,config,ini}]
+indent_style = space
+indent_size = 2
+
+# XML files - 2 spaces
+[*.xml]
+indent_style = space
+indent_size = 2
+
+# Properties files
+[*.properties]
+indent_style = space
+indent_size = 2
+
+# Batch files - CRLF
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+indent_style = space
+indent_size = 4
