@@ -1,0 +1,53 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  read_timeout: 15s
+  write_timeout: 15s
+  idle_timeout: 60s
+  shutdown_timeout: 10s
+  environment: production
+
+cluster:
+  node_id: node-1
+  node_address: 127.0.0.1:9000
+  replication_factor: 3
+  heartbeat_interval: 5s
+  failure_timeout: 30s
+  discovery_port: 9001
+
+storage:
+  data_directory: /var/lib/clusterdb
+  sync_writes: true
+  max_open_files: 2000
+  value_log_file_size: 1073741824
+  compression: zstd
+
+logging:
+  level: info
+  encoding: json
+  development: false
+  output_paths:
+    - stdout
+  error_output_paths:
+    - stderr
+
+metrics:
+  enabled: true
+  port: 9090
+
+authentication:
+  jwt_secret: change-me-in-production
+  issuer: clusterdb
+  expiration: 24h
+
+cache:
+  enabled: true
+  host: redis.internal
+  port: 6379
+  ttl: 10m
+
+ai:
+  embedding_model: text-embedding-3-large
+  ollama_url: http://ollama:11434
+  llm_model: llama3.1
+  vector_dimension: 3072
