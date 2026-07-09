@@ -41,7 +41,7 @@ func Defaults() Config {
 			Port:    9090,
 		},
 		Authentication: AuthenticationConfig{
-			JWTSecret:  "change-me-in-production",
+			JWTSecret:  "change-me-in-production-key-32-chars",
 			Issuer:     "clusterdb",
 			Expiration: 24 * time.Hour,
 		},

@@ -36,7 +36,7 @@ metrics:
   port: 9090
 
 authentication:
-  jwt_secret: change-me-in-production
+  jwt_secret: change-me-in-production-key-32-chars
   issuer: clusterdb
   expiration: 24h
 

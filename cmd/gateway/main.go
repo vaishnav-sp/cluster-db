@@ -1,10 +1,23 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+
+	"github.com/vaishnav-sp/cluster-db/internal/app"
+)
+
+var Version = "dev"
 
 func main() {
-	fmt.Println("ClusterDB")
-	fmt.Println("Starting Gateway Service...")
-	fmt.Println("Version: dev")
-	fmt.Println("Environment: development")
+	application, err := app.New(Version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize application: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := application.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Application error: %v\n", err)
+		os.Exit(1)
+	}
 }

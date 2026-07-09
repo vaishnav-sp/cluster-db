@@ -74,7 +74,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.port", 9090)
 
-	v.SetDefault("authentication.jwt_secret", "change-me-in-production")
+	v.SetDefault("authentication.jwt_secret", "change-me-in-production-key-32-chars")
 	v.SetDefault("authentication.issuer", "clusterdb")
 	v.SetDefault("authentication.expiration", 24*time.Hour)
 
