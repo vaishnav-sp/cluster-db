@@ -29,6 +29,11 @@ func Defaults() Config {
 			MaxOpenFiles:     1000,
 			ValueLogFileSize: 1024 * 1024 * 1024,
 			Compression:      "snappy",
+			WAL: WALConfig{
+				Enabled:     false,
+				Path:        "./data/clusterdb.wal",
+				SyncOnWrite: true,
+			},
 		},
 		Logging: LoggingConfig{
 			Level:            "info",

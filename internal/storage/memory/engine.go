@@ -7,11 +7,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/vaishnav-sp/cluster-db/internal/storage"
+	"github.com/vaishnav-sp/cluster-db/internal/storage/wal"
 )
 
 const (
@@ -27,18 +31,38 @@ const (
 type Engine struct {
 	mu        sync.RWMutex
 	store     map[string]storage.Record
+	cfg       Config
+	wal       *wal.Writer
 	open      bool
 	createdAt time.Time
+}
+
+// Config configures optional persistence for Engine.
+type Config struct {
+	WAL WALConfig
+}
+
+// WALConfig controls the memory engine's write-ahead log.
+type WALConfig struct {
+	Enabled     bool
+	Path        string
+	SyncOnWrite bool
 }
 
 // Compile-time interface assertion.
 var _ storage.Engine = (*Engine)(nil)
 
-// NewEngine returns a new, unopened in-memory Engine.
-// Call Open before performing any I/O operations.
-func NewEngine() *Engine {
+// NewEngine returns a new, unopened in-memory Engine. The optional config
+// preserves the original no-argument constructor for callers that do not use
+// WAL persistence. Call Open before performing any I/O operations.
+func NewEngine(configs ...Config) *Engine {
+	cfg := Config{}
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
 	return &Engine{
 		store: make(map[string]storage.Record),
+		cfg:   cfg,
 	}
 }
 
@@ -50,6 +74,12 @@ func (e *Engine) Open(_ context.Context) error {
 
 	if e.open {
 		return nil
+	}
+
+	if e.cfg.WAL.Enabled {
+		if err := e.openWALLocked(); err != nil {
+			return err
+		}
 	}
 
 	e.open = true
@@ -64,6 +94,12 @@ func (e *Engine) Close(_ context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.wal != nil {
+		if err := e.wal.Close(); err != nil {
+			return fmt.Errorf("memory engine: close WAL: %w", err)
+		}
+		e.wal = nil
+	}
 	e.open = false
 
 	return nil
@@ -98,6 +134,10 @@ func (e *Engine) Put(_ context.Context, rec storage.Record) error {
 	}
 
 	rec.Metadata.UpdatedAt = now
+
+	if err := e.appendWALLocked(wal.OperationPut, rec.Key, rec.Value, now); err != nil {
+		return err
+	}
 
 	// Defensive copy: keep the stored value independent of caller-owned slices.
 	rec.Key = copyBytes(rec.Key)
@@ -141,6 +181,10 @@ func (e *Engine) Delete(_ context.Context, key storage.Key) error {
 	defer e.mu.Unlock()
 
 	if err := e.checkOpen(); err != nil {
+		return err
+	}
+
+	if err := e.appendWALLocked(wal.OperationDelete, key, nil, time.Now()); err != nil {
 		return err
 	}
 
@@ -236,6 +280,62 @@ func (e *Engine) checkOpen() error {
 		return storage.ErrEngineClosed
 	}
 
+	return nil
+}
+
+// openWALLocked opens the configured WAL, replays it into a fresh map, and
+// installs a writer positioned at the end of the log. Callers must hold e.mu.
+func (e *Engine) openWALLocked() error {
+	if e.cfg.WAL.Path == "" {
+		return fmt.Errorf("memory engine: WAL enabled with empty path")
+	}
+	if dir := filepath.Dir(e.cfg.WAL.Path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("memory engine: create WAL directory: %w", err)
+		}
+	}
+	file, err := os.OpenFile(e.cfg.WAL.Path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("memory engine: open WAL: %w", err)
+	}
+
+	store := make(map[string]storage.Record)
+	info, err := file.Stat()
+	if err == nil && info.Size() > 0 {
+		err = replay(io.NewSectionReader(file, 0, info.Size()), store)
+	}
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("memory engine: replay WAL: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("memory engine: seek WAL end: %w", err)
+	}
+	writer, err := wal.NewWriter(file)
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("memory engine: create WAL writer: %w", err)
+	}
+	e.store = store
+	e.wal = writer
+	return nil
+}
+
+// appendWALLocked records a mutation before it is applied to e.store. Callers
+// must hold e.mu, which preserves WAL and in-memory mutation order.
+func (e *Engine) appendWALLocked(op wal.OperationType, key, value []byte, timestamp time.Time) error {
+	if e.wal == nil {
+		return nil
+	}
+	if err := e.wal.Append(wal.WALRecord{Operation: op, Timestamp: timestamp, Key: key, Value: value}); err != nil {
+		return fmt.Errorf("memory engine: append WAL: %w", err)
+	}
+	if e.cfg.WAL.SyncOnWrite {
+		if err := e.wal.Sync(); err != nil {
+			return fmt.Errorf("memory engine: sync WAL: %w", err)
+		}
+	}
 	return nil
 }
 

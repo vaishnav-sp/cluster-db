@@ -22,6 +22,10 @@ storage:
   max_open_files: 1000
   value_log_file_size: 1073741824
   compression: snappy
+  wal:
+    enabled: true
+    path: ./data/clusterdb.wal
+    sync_on_write: false
 
 logging:
   level: info

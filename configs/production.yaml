@@ -22,6 +22,10 @@ storage:
   max_open_files: 2000
   value_log_file_size: 1073741824
   compression: zstd
+  wal:
+    enabled: true
+    path: /var/lib/clusterdb/clusterdb.wal
+    sync_on_write: true
 
 logging:
   level: info

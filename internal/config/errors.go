@@ -21,4 +21,6 @@ var (
 	ErrInvalidLoggingLevel = errors.New("invalid logging level")
 	// ErrInvalidStorageEngine indicates that the configured storage engine is unsupported.
 	ErrInvalidStorageEngine = errors.New("invalid storage engine")
+	// ErrInvalidWALPath indicates that WAL is enabled without a usable path.
+	ErrInvalidWALPath = errors.New("invalid wal path")
 )

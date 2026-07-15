@@ -55,6 +55,9 @@ func Validate(cfg Config) error {
 	if err := validateStorageEngine(cfg.Storage.Engine); err != nil {
 		return err
 	}
+	if cfg.Storage.WAL.Enabled && strings.TrimSpace(cfg.Storage.WAL.Path) == "" {
+		return fmt.Errorf("%w: storage.wal.path is required when WAL is enabled", ErrInvalidWALPath)
+	}
 	if err := validateLoggingLevel(cfg.Logging.Level); err != nil {
 		return err
 	}

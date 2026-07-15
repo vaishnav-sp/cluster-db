@@ -37,7 +37,13 @@ const (
 func Build(cfg config.StorageConfig) (storage.Engine, error) {
 	switch EngineType(cfg.Engine) {
 	case EngineMemory:
-		return memory.NewEngine(), nil
+		return memory.NewEngine(memory.Config{
+			WAL: memory.WALConfig{
+				Enabled:     cfg.WAL.Enabled,
+				Path:        cfg.WAL.Path,
+				SyncOnWrite: cfg.WAL.SyncOnWrite,
+			},
+		}), nil
 
 	// case EngineBadger:
 	//     return badger.NewEngine(cfg), nil

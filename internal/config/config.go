@@ -39,12 +39,21 @@ type ClusterConfig struct {
 type StorageConfig struct {
 	// Engine selects the storage backend. Supported values: "memory".
 	// Future values: "badger", "pebble", "rocksdb".
-	Engine           string `mapstructure:"engine"`
-	DataDirectory    string `mapstructure:"data_directory"`
-	SyncWrites       bool   `mapstructure:"sync_writes"`
-	MaxOpenFiles     int    `mapstructure:"max_open_files"`
-	ValueLogFileSize int    `mapstructure:"value_log_file_size"`
-	Compression      string `mapstructure:"compression"`
+	Engine           string    `mapstructure:"engine"`
+	DataDirectory    string    `mapstructure:"data_directory"`
+	SyncWrites       bool      `mapstructure:"sync_writes"`
+	MaxOpenFiles     int       `mapstructure:"max_open_files"`
+	ValueLogFileSize int       `mapstructure:"value_log_file_size"`
+	Compression      string    `mapstructure:"compression"`
+	WAL              WALConfig `mapstructure:"wal"`
+}
+
+// WALConfig controls write-ahead-log persistence for storage engines that
+// support it. It is disabled by default to preserve memory-only behaviour.
+type WALConfig struct {
+	Enabled     bool   `mapstructure:"enabled"`
+	Path        string `mapstructure:"path"`
+	SyncOnWrite bool   `mapstructure:"sync_on_write"`
 }
 
 // LoggingConfig contains log output settings.

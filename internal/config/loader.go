@@ -65,6 +65,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("storage.max_open_files", 1000)
 	v.SetDefault("storage.value_log_file_size", 1024*1024*1024)
 	v.SetDefault("storage.compression", "snappy")
+	v.SetDefault("storage.wal.enabled", false)
+	v.SetDefault("storage.wal.path", "./data/clusterdb.wal")
+	v.SetDefault("storage.wal.sync_on_write", true)
 
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.encoding", "json")
@@ -111,6 +114,9 @@ func bindEnvironmentVariables(v *viper.Viper) {
 		"storage.max_open_files",
 		"storage.value_log_file_size",
 		"storage.compression",
+		"storage.wal.enabled",
+		"storage.wal.path",
+		"storage.wal.sync_on_write",
 		"logging.level",
 		"logging.encoding",
 		"logging.development",

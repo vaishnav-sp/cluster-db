@@ -10,7 +10,7 @@ An in-memory implementation of `storage.Engine` backed by a Go `map` protected b
 |----------|-------|
 | Persistence | ❌ None — all data is lost on process exit |
 | Thread safety | ✅ `sync.RWMutex` (concurrent reads, exclusive writes) |
-| WAL | ❌ Not applicable |
+| WAL | Optional append-only persistence and replay |
 | Snapshots | ❌ Not applicable |
 | Replication | ❌ Not applicable |
 | Scan order | Ascending lexicographic (or descending with `Reverse: true`) |
@@ -61,6 +61,22 @@ if err := iter.Error(); err != nil {
 ```
 
 ---
+
+## WAL persistence
+
+The memory engine can optionally preserve mutations in an append-only WAL.
+The storage manager passes `storage.wal.enabled`, `storage.wal.path`, and
+`storage.wal.sync_on_write` into the engine. Each mutation is written to WAL
+before the map is changed. On open, records are replayed in order; corruption
+causes startup to fail rather than serving incomplete state.
+
+```go
+eng := memory.NewEngine(memory.Config{WAL: memory.WALConfig{
+    Enabled: true,
+    Path: "./data/clusterdb.wal",
+    SyncOnWrite: true,
+}})
+```
 
 ## Implementation Notes
 
