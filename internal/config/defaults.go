@@ -23,6 +23,7 @@ func Defaults() Config {
 			DiscoveryPort:     9001,
 		},
 		Storage: StorageConfig{
+			Engine:           "memory",
 			DataDirectory:    "./data",
 			SyncWrites:       true,
 			MaxOpenFiles:     1000,

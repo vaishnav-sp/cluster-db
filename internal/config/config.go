@@ -37,6 +37,9 @@ type ClusterConfig struct {
 
 // StorageConfig contains persistence related settings.
 type StorageConfig struct {
+	// Engine selects the storage backend. Supported values: "memory".
+	// Future values: "badger", "pebble", "rocksdb".
+	Engine           string `mapstructure:"engine"`
 	DataDirectory    string `mapstructure:"data_directory"`
 	SyncWrites       bool   `mapstructure:"sync_writes"`
 	MaxOpenFiles     int    `mapstructure:"max_open_files"`

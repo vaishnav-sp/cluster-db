@@ -7,6 +7,7 @@ import (
 	"github.com/vaishnav-sp/cluster-db/internal/config"
 	"github.com/vaishnav-sp/cluster-db/internal/logger"
 	"github.com/vaishnav-sp/cluster-db/internal/server"
+	"github.com/vaishnav-sp/cluster-db/internal/storage/manager"
 )
 
 // New creates and initializes a new Application.
@@ -22,15 +23,24 @@ func New(version string) (*Application, error) {
 	}
 
 	startedAt := time.Now()
-	httpServer, err := server.New(cfg.Server, log, version, startedAt)
+	storageManager, err := manager.New(cfg.Storage, log)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrStorageInitialization, err)
+	}
+
+	httpServer, err := server.New(cfg.Server, log, version, startedAt, storageManager)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrServerInitialization, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrStorageInitialization, err)
 	}
 
 	app := &Application{
 		Config:      cfg,
 		Logger:      log,
 		Server:      httpServer,
+		Storage:     storageManager,
 		StartedAt:   startedAt,
 		Version:     version,
 		Environment: cfg.Server.Environment,

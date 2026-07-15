@@ -9,4 +9,6 @@ var (
 	ErrLoggerInitialization = errors.New("logger initialization failed")
 	// ErrServerInitialization indicates the server could not be initialized.
 	ErrServerInitialization = errors.New("server initialization failed")
+	// ErrStorageInitialization indicates the storage manager could not be initialized.
+	ErrStorageInitialization = errors.New("storage initialization failed")
 )

@@ -19,4 +19,6 @@ var (
 	ErrInvalidDataDirectory = errors.New("invalid data directory")
 	// ErrInvalidLoggingLevel indicates that the logging level is invalid.
 	ErrInvalidLoggingLevel = errors.New("invalid logging level")
+	// ErrInvalidStorageEngine indicates that the configured storage engine is unsupported.
+	ErrInvalidStorageEngine = errors.New("invalid storage engine")
 )

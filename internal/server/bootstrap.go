@@ -12,10 +12,11 @@ import (
 	"github.com/vaishnav-sp/cluster-db/internal/config"
 	"github.com/vaishnav-sp/cluster-db/internal/server/handlers"
 	"github.com/vaishnav-sp/cluster-db/internal/server/middleware"
+	"github.com/vaishnav-sp/cluster-db/internal/storage/manager"
 )
 
 // New creates and initializes a new HTTP Server.
-func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt time.Time) (*Server, error) {
+func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt time.Time, storage *manager.Manager) (*Server, error) {
 	address := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 
 	mux := http.NewServeMux()
@@ -23,6 +24,9 @@ func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt tim
 	mux.Handle("/health", healthHandler)
 	mux.Handle("/live", healthHandler)
 	mux.Handle("/ready", healthHandler)
+
+	kvHandler := handlers.NewKVHandler(storage)
+	mux.Handle("/v1/kv/", kvHandler)
 
 	chain := middleware.Chain(
 		mux,

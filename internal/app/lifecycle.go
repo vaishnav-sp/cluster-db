@@ -27,6 +27,10 @@ func (a *Application) Run() error {
 		zap.String("address", fmt.Sprintf("%s:%d", a.Config.Server.Host, a.Config.Server.Port)),
 	)
 
+	if err := a.Storage.Open(context.Background()); err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -52,7 +56,9 @@ func (a *Application) Shutdown() error {
 		return fmt.Errorf("%w", err)
 	}
 
-	// Placeholder for future background worker shutdown.
+	if err := a.Storage.Close(ctx); err != nil {
+		a.Logger.Error("Failed to close storage engine", zap.Error(err))
+	}
 
 	a.Logger.Info("Application shutdown complete")
 	err := a.Logger.Sync()

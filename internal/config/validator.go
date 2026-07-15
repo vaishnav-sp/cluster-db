@@ -52,6 +52,9 @@ func Validate(cfg Config) error {
 	if err := validateDataDirectory(cfg.Storage.DataDirectory); err != nil {
 		return err
 	}
+	if err := validateStorageEngine(cfg.Storage.Engine); err != nil {
+		return err
+	}
 	if err := validateLoggingLevel(cfg.Logging.Level); err != nil {
 		return err
 	}
@@ -108,6 +111,17 @@ func validateLoggingLevel(level string) error {
 	allowed := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !allowed[strings.ToLower(level)] {
 		return fmt.Errorf("%w: logging.level=%q", ErrInvalidLoggingLevel, level)
+	}
+	return nil
+}
+
+func validateStorageEngine(engine string) error {
+	allowed := map[string]bool{
+		"memory": true,
+		// Future engines: "badger", "pebble", "rocksdb"
+	}
+	if !allowed[strings.ToLower(engine)] {
+		return fmt.Errorf("%w: storage.engine=%q (supported: memory)", ErrInvalidStorageEngine, engine)
 	}
 	return nil
 }

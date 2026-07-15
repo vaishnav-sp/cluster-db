@@ -59,6 +59,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("cluster.failure_timeout", 30*time.Second)
 	v.SetDefault("cluster.discovery_port", 9001)
 
+	v.SetDefault("storage.engine", "memory")
 	v.SetDefault("storage.data_directory", "./data")
 	v.SetDefault("storage.sync_writes", true)
 	v.SetDefault("storage.max_open_files", 1000)
@@ -104,6 +105,7 @@ func bindEnvironmentVariables(v *viper.Viper) {
 		"cluster.heartbeat_interval",
 		"cluster.failure_timeout",
 		"cluster.discovery_port",
+		"storage.engine",
 		"storage.data_directory",
 		"storage.sync_writes",
 		"storage.max_open_files",

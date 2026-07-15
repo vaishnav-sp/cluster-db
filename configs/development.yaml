@@ -16,6 +16,7 @@ cluster:
   discovery_port: 9001
 
 storage:
+  engine: memory
   data_directory: ./data
   sync_writes: true
   max_open_files: 1000
