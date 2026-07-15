@@ -1,0 +1,105 @@
+# memory — In-Memory Storage Engine
+
+An in-memory implementation of `storage.Engine` backed by a Go `map` protected by `sync.RWMutex`. This engine is the **reference implementation** for ClusterDB and is intended exclusively for unit testing and local development.
+
+---
+
+## Characteristics
+
+| Property | Value |
+|----------|-------|
+| Persistence | ❌ None — all data is lost on process exit |
+| Thread safety | ✅ `sync.RWMutex` (concurrent reads, exclusive writes) |
+| WAL | ❌ Not applicable |
+| Snapshots | ❌ Not applicable |
+| Replication | ❌ Not applicable |
+| Scan order | Ascending lexicographic (or descending with `Reverse: true`) |
+| External deps | ❌ None beyond the standard library |
+
+---
+
+## Usage
+
+```go
+import (
+    "context"
+    "github.com/vaishnav-sp/cluster-db/internal/storage"
+    "github.com/vaishnav-sp/cluster-db/internal/storage/memory"
+)
+
+eng := memory.NewEngine()
+
+ctx := context.Background()
+if err := eng.Open(ctx); err != nil {
+    log.Fatal(err)
+}
+defer eng.Close(ctx)
+
+// Write
+err := eng.Put(ctx, storage.Record{
+    Key:   storage.Key("hello"),
+    Value: storage.Value("world"),
+})
+
+// Read
+rec, err := eng.Get(ctx, storage.Key("hello"))
+
+// Scan with prefix
+iter, err := eng.Scan(ctx, storage.ScanOptions{
+    Prefix: storage.Key("hel"),
+    Limit:  100,
+})
+defer iter.Close()
+
+for iter.Next() {
+    rec := iter.Record()
+    fmt.Printf("%s → %s\n", rec.Key, rec.Value)
+}
+if err := iter.Error(); err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+## Implementation Notes
+
+### Defensive copies
+`Put` stores deep copies of both `Key` and `Value`. This prevents callers from accidentally mutating stored state through aliased byte slices — a common source of subtle bugs in high-throughput systems.
+
+### Scan materialisation
+`Scan` collects all matching records under a read-lock and hands them to a slice-backed `iterator`. There are no goroutines or channels involved. This keeps the implementation simple and makes iterator behaviour fully deterministic in tests.
+
+### CreatedAt preservation
+On an overwrite `Put`, `Metadata.CreatedAt` is preserved from the existing record. `Metadata.UpdatedAt` is always set to `time.Now()`.
+
+---
+
+## Limitations
+
+- **No TTL enforcement** — `Metadata.TTL` is stored but not acted upon. The caller is responsible for expiry logic if needed at this level.
+- **No atomicity across multiple keys** — there is no multi-key transaction support. Each operation is independently atomic.
+- **Memory-only** — unsuitable for datasets that exceed available RAM.
+
+---
+
+## Testing
+
+This engine is the recommended test double for any component that depends on `storage.Engine`:
+
+```go
+func setupEngine(t *testing.T) storage.Engine {
+    t.Helper()
+
+    eng := memory.NewEngine()
+    if err := eng.Open(context.Background()); err != nil {
+        t.Fatalf("open engine: %v", err)
+    }
+
+    t.Cleanup(func() {
+        _ = eng.Close(context.Background())
+    })
+
+    return eng
+}
+```
