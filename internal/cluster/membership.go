@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -32,27 +33,140 @@ type Node struct {
 type Membership struct {
 	mu    sync.RWMutex
 	nodes map[string]Node
+
+	localNodeID string
+
+	heartbeatInterval time.Duration
+	failureTimeout    time.Duration
+
+	failureDetectorStopCh  chan struct{}
+	failureDetectorDoneCh  chan struct{}
+	failureDetectorStarted bool
+
+	changeHook func()
+}
+
+func (s Status) String() string {
+	switch s {
+	case Alive:
+		return "alive"
+	case Suspect:
+		return "suspect"
+	case Dead:
+		return "dead"
+	default:
+		return "unknown"
+	}
 }
 
 // NewMembership creates an empty membership manager.
 func NewMembership() *Membership {
-	return &Membership{nodes: make(map[string]Node)}
+	return &Membership{
+		nodes:             make(map[string]Node),
+		heartbeatInterval: time.Second,
+		failureTimeout:    3 * time.Second,
+	}
 }
 
 // AddNode inserts or replaces a node in the membership list.
 func (m *Membership) AddNode(node Node) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.nodes[node.ID] = node
 	m.electLeaderLocked()
+	m.mu.Unlock()
+	m.notifyChange()
+}
+
+// SetLocalNodeID configures the node identifier that should be excluded from failure detection.
+func (m *Membership) SetLocalNodeID(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.localNodeID = id
+}
+
+// SetFailureDetectorConfig configures the detector interval and failure timeout.
+func (m *Membership) SetFailureDetectorConfig(heartbeatInterval, failureTimeout time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if heartbeatInterval > 0 {
+		m.heartbeatInterval = heartbeatInterval
+	}
+	if failureTimeout > 0 {
+		m.failureTimeout = failureTimeout
+	}
+}
+
+// StartFailureDetector begins a background ticker that evaluates node health.
+func (m *Membership) StartFailureDetector(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	m.mu.Lock()
+	if m.failureDetectorStarted {
+		m.mu.Unlock()
+		return
+	}
+	if m.heartbeatInterval <= 0 {
+		m.heartbeatInterval = time.Second
+	}
+	if m.failureTimeout <= 0 {
+		m.failureTimeout = 3 * time.Second
+	}
+	interval := m.heartbeatInterval
+	timeout := m.failureTimeout
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	m.failureDetectorStopCh = stopCh
+	m.failureDetectorDoneCh = doneCh
+	m.failureDetectorStarted = true
+	m.mu.Unlock()
+
+	go func() {
+		defer close(doneCh)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				m.detectFailures(time.Now().UTC(), timeout)
+			}
+		}
+	}()
+}
+
+// StopFailureDetector stops the background failure detector.
+func (m *Membership) StopFailureDetector() {
+	m.mu.Lock()
+	if !m.failureDetectorStarted {
+		m.mu.Unlock()
+		return
+	}
+	stopCh := m.failureDetectorStopCh
+	doneCh := m.failureDetectorDoneCh
+	m.failureDetectorStopCh = nil
+	m.failureDetectorDoneCh = nil
+	m.failureDetectorStarted = false
+	m.mu.Unlock()
+
+	close(stopCh)
+	if doneCh != nil {
+		<-doneCh
+	}
 }
 
 // RemoveNode deletes a node by id.
 func (m *Membership) RemoveNode(id string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	delete(m.nodes, id)
 	m.electLeaderLocked()
+	m.mu.Unlock()
+	m.notifyChange()
 }
 
 // GetNode returns a node by id if it exists.
@@ -77,43 +191,49 @@ func (m *Membership) ListNodes() []Node {
 // UpdateHeartbeat refreshes the heartbeat timestamp for a node.
 func (m *Membership) UpdateHeartbeat(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	node, ok := m.nodes[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("cluster: node %q not found", id)
 	}
 	node.LastHeartbeat = time.Now().UTC()
 	node.Status = Alive
 	m.nodes[id] = node
 	m.electLeaderLocked()
+	m.mu.Unlock()
+	m.notifyChange()
 	return nil
 }
 
 // MarkSuspect marks a node as suspect.
 func (m *Membership) MarkSuspect(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	node, ok := m.nodes[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("cluster: node %q not found", id)
 	}
 	node.Status = Suspect
 	m.nodes[id] = node
 	m.electLeaderLocked()
+	m.mu.Unlock()
+	m.notifyChange()
 	return nil
 }
 
 // MarkDead marks a node as dead.
 func (m *Membership) MarkDead(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	node, ok := m.nodes[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("cluster: node %q not found", id)
 	}
 	node.Status = Dead
 	m.nodes[id] = node
 	m.electLeaderLocked()
+	m.mu.Unlock()
+	m.notifyChange()
 	return nil
 }
 
@@ -174,6 +294,47 @@ func (m *Membership) Count() int {
 	return len(m.nodes)
 }
 
+func (m *Membership) setChangeHook(h func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.changeHook = h
+}
+
+func (m *Membership) notifyChange() {
+	m.mu.RLock()
+	hook := m.changeHook
+	m.mu.RUnlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func (m *Membership) detectFailures(now time.Time, failureTimeout time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for id, node := range m.nodes {
+		if id == m.localNodeID || node.ID == m.localNodeID {
+			continue
+		}
+		if node.Status == Dead {
+			continue
+		}
+
+		elapsed := now.Sub(node.LastHeartbeat)
+		if node.Status == Alive && elapsed > failureTimeout {
+			node.Status = Suspect
+			m.nodes[id] = node
+			continue
+		}
+		if node.Status == Suspect && elapsed > 2*failureTimeout {
+			node.Status = Dead
+			m.nodes[id] = node
+			m.electLeaderLocked()
+		}
+	}
+}
+
 func (m *Membership) electLeaderLocked() (Node, bool) {
 	var leader Node
 	var found bool
@@ -187,6 +348,9 @@ func (m *Membership) electLeaderLocked() (Node, bool) {
 			currentLeaderFound = true
 		}
 		if node.Status != Alive {
+			continue
+		}
+		if node.ID == m.localNodeID {
 			continue
 		}
 		if !found || node.ID < leaderID {

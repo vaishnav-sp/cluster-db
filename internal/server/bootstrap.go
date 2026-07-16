@@ -9,6 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
+	clusterRPC "github.com/vaishnav-sp/cluster-db/internal/cluster/rpc"
 	"github.com/vaishnav-sp/cluster-db/internal/config"
 	"github.com/vaishnav-sp/cluster-db/internal/server/handlers"
 	"github.com/vaishnav-sp/cluster-db/internal/server/middleware"
@@ -27,6 +28,21 @@ func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt tim
 
 	kvHandler := handlers.NewKVHandler(storage)
 	mux.Handle("/v1/kv/", kvHandler)
+
+	rpcServer := clusterRPC.NewServer()
+	rpcServer.HeartbeatHandler = func(req clusterRPC.HeartbeatRequest) (clusterRPC.HeartbeatResponse, error) {
+		return clusterRPC.HeartbeatResponse{Accepted: true, Message: "ok"}, nil
+	}
+	rpcServer.JoinHandler = func(req clusterRPC.JoinRequest) (clusterRPC.JoinResponse, error) {
+		return clusterRPC.JoinResponse{Accepted: true, Message: "ok"}, nil
+	}
+	rpcServer.LeaveHandler = func(req clusterRPC.LeaveRequest) (clusterRPC.LeaveResponse, error) {
+		return clusterRPC.LeaveResponse{Accepted: true, Message: "ok"}, nil
+	}
+	rpcServer.AppendHandler = func(req clusterRPC.AppendEntriesRequest) (clusterRPC.AppendEntriesResponse, error) {
+		return clusterRPC.AppendEntriesResponse{Accepted: true, Message: "ok"}, nil
+	}
+	mux.Handle("/cluster/", rpcServer.Handler())
 
 	chain := middleware.Chain(
 		mux,

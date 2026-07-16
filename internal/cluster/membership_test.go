@@ -1,7 +1,9 @@
 package cluster
 
 import (
+	"context"
 	"testing"
+	"time"
 )
 
 func TestMembershipLifecycle(t *testing.T) {
@@ -178,4 +180,135 @@ func TestElectLeaderDeterministicAcrossCalls(t *testing.T) {
 	if first.ID != second.ID || first.ID != "node-1" {
 		t.Fatalf("leader should remain deterministic, got %s and %s", first.ID, second.ID)
 	}
+}
+
+func TestFailureDetectorMarksAliveNodeSuspect(t *testing.T) {
+	m := NewMembership()
+	m.SetLocalNodeID("local")
+	m.SetFailureDetectorConfig(10*time.Millisecond, 15*time.Millisecond)
+	m.AddNode(Node{ID: "local", Address: "127.0.0.1:9000", Status: Alive, LastHeartbeat: time.Now().UTC()})
+	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Alive, LastHeartbeat: time.Now().Add(-50 * time.Millisecond).UTC()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.StartFailureDetector(ctx)
+	defer m.StopFailureDetector()
+
+	if err := waitForNodeStatus(t, m, "node-1", Suspect, time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFailureDetectorMarksSuspectNodeDead(t *testing.T) {
+	m := NewMembership()
+	m.SetLocalNodeID("local")
+	m.SetFailureDetectorConfig(10*time.Millisecond, 15*time.Millisecond)
+	m.AddNode(Node{ID: "local", Address: "127.0.0.1:9000", Status: Alive, LastHeartbeat: time.Now().UTC()})
+	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Suspect, LastHeartbeat: time.Now().Add(-50 * time.Millisecond).UTC()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.StartFailureDetector(ctx)
+	defer m.StopFailureDetector()
+
+	if err := waitForNodeStatus(t, m, "node-1", Dead, time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFailureDetectorRestoresSuspectNodeOnHeartbeat(t *testing.T) {
+	m := NewMembership()
+	m.SetLocalNodeID("local")
+	m.SetFailureDetectorConfig(10*time.Millisecond, 40*time.Millisecond)
+	m.AddNode(Node{ID: "local", Address: "127.0.0.1:9000", Status: Alive, LastHeartbeat: time.Now().UTC()})
+	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Suspect, LastHeartbeat: time.Now().Add(-100 * time.Millisecond).UTC()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.StartFailureDetector(ctx)
+	defer m.StopFailureDetector()
+
+	if err := m.UpdateHeartbeat("node-1"); err != nil {
+		t.Fatalf("update heartbeat: %v", err)
+	}
+
+	if err := waitForNodeStatus(t, m, "node-1", Alive, time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFailureDetectorReelectsLeaderAfterLeaderDies(t *testing.T) {
+	m := NewMembership()
+	m.SetLocalNodeID("local")
+	m.SetFailureDetectorConfig(10*time.Millisecond, 15*time.Millisecond)
+	m.AddNode(Node{ID: "local", Address: "127.0.0.1:9000", Status: Alive, LastHeartbeat: time.Now().UTC()})
+	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Alive, LastHeartbeat: time.Now().Add(-50 * time.Millisecond).UTC()})
+	m.AddNode(Node{ID: "node-2", Address: "127.0.0.1:9002", Status: Alive, LastHeartbeat: time.Now().UTC()})
+	if err := m.SetLeader("node-1"); err != nil {
+		t.Fatalf("set leader: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.StartFailureDetector(ctx)
+	defer m.StopFailureDetector()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		leader, ok := m.Leader()
+		if ok && leader.ID == "node-2" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("leader did not re-elect to node-2")
+}
+
+func TestFailureDetectorShutdown(t *testing.T) {
+	m := NewMembership()
+	m.SetLocalNodeID("local")
+	m.SetFailureDetectorConfig(10*time.Millisecond, 20*time.Millisecond)
+	m.AddNode(Node{ID: "local", Address: "127.0.0.1:9000", Status: Alive, LastHeartbeat: time.Now().UTC()})
+	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Alive, LastHeartbeat: time.Now().UTC()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.StartFailureDetector(ctx)
+	cancel()
+	m.StopFailureDetector()
+	m.StopFailureDetector()
+}
+
+func waitForNodeStatus(t *testing.T, m *Membership, id string, want Status, timeout time.Duration) error {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		node, ok := m.GetNode(id)
+		if ok && node.Status == want {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	node, ok := m.GetNode(id)
+	if !ok {
+		return &statusError{nodeID: id, want: want, got: "missing"}
+	}
+	return &statusError{nodeID: id, want: want, got: node.Status}
+}
+
+type statusError struct {
+	nodeID string
+	want   Status
+	got    interface{}
+}
+
+func (e *statusError) Error() string {
+	got := "unknown"
+	if status, ok := e.got.(Status); ok {
+		got = status.String()
+	} else if value, ok := e.got.(string); ok {
+		got = value
+	}
+	return "node " + e.nodeID + " status = " + got + ", want " + e.want.String()
 }
