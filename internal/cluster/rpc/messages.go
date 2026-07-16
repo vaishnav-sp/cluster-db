@@ -59,3 +59,63 @@ type AppendEntriesResponse struct {
 	Accepted bool   `json:"accepted"`
 	Message  string `json:"message,omitempty"`
 }
+
+// KVGetRequest represents a request to get a key.
+type KVGetRequest struct {
+	Key string `json:"key"`
+}
+
+// KVGetResponse represents the response to a key get request.
+type KVGetResponse struct {
+	Value []byte `json:"value,omitempty"`
+	Found bool   `json:"found"`
+	Error string `json:"error,omitempty"`
+}
+
+// KVPutRequest represents a request to write a key.
+type KVPutRequest struct {
+	Key   string `json:"key"`
+	Value []byte `json:"value"`
+}
+
+// KVPutResponse represents the response to a key write request.
+type KVPutResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// KVDeleteRequest represents a request to delete a key.
+type KVDeleteRequest struct {
+	Key string `json:"key"`
+}
+
+// KVDeleteResponse represents the response to a key delete request.
+type KVDeleteResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// ReplicaPutRequest represents a request to write a replicated key on a replica.
+type ReplicaPutRequest struct {
+	Key   string `json:"key"`
+	Value []byte `json:"value"`
+}
+
+// ReplicaPutResponse represents the response to a replicated key write request.
+type ReplicaPutResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// ReplicaDeleteRequest represents a request to delete a replicated key on a replica.
+type ReplicaDeleteRequest struct {
+	Key string `json:"key"`
+}
+
+// ReplicaDeleteResponse represents the response to a replicated key delete request.
+type ReplicaDeleteResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+

@@ -9,15 +9,17 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vaishnav-sp/cluster-db/internal/cluster"
 	clusterRPC "github.com/vaishnav-sp/cluster-db/internal/cluster/rpc"
 	"github.com/vaishnav-sp/cluster-db/internal/config"
 	"github.com/vaishnav-sp/cluster-db/internal/server/handlers"
 	"github.com/vaishnav-sp/cluster-db/internal/server/middleware"
+	"github.com/vaishnav-sp/cluster-db/internal/storage"
 	"github.com/vaishnav-sp/cluster-db/internal/storage/manager"
 )
 
 // New creates and initializes a new HTTP Server.
-func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt time.Time, storage *manager.Manager) (*Server, error) {
+func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt time.Time, store *manager.Manager, clusterManager *cluster.Manager) (*Server, error) {
 	address := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 
 	mux := http.NewServeMux()
@@ -26,21 +28,91 @@ func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt tim
 	mux.Handle("/live", healthHandler)
 	mux.Handle("/ready", healthHandler)
 
-	kvHandler := handlers.NewKVHandler(storage)
+	kvHandler := handlers.NewKVHandler(store, clusterManager)
 	mux.Handle("/v1/kv/", kvHandler)
 
 	rpcServer := clusterRPC.NewServer()
-	rpcServer.HeartbeatHandler = func(req clusterRPC.HeartbeatRequest) (clusterRPC.HeartbeatResponse, error) {
-		return clusterRPC.HeartbeatResponse{Accepted: true, Message: "ok"}, nil
-	}
-	rpcServer.JoinHandler = func(req clusterRPC.JoinRequest) (clusterRPC.JoinResponse, error) {
-		return clusterRPC.JoinResponse{Accepted: true, Message: "ok"}, nil
-	}
-	rpcServer.LeaveHandler = func(req clusterRPC.LeaveRequest) (clusterRPC.LeaveResponse, error) {
-		return clusterRPC.LeaveResponse{Accepted: true, Message: "ok"}, nil
+	if clusterManager != nil {
+		rpcServer.HeartbeatHandler = clusterManager.HandleHeartbeat
+		rpcServer.JoinHandler = clusterManager.HandleJoin
+		rpcServer.LeaveHandler = clusterManager.HandleLeave
+	} else {
+		rpcServer.HeartbeatHandler = func(req clusterRPC.HeartbeatRequest) (clusterRPC.HeartbeatResponse, error) {
+			return clusterRPC.HeartbeatResponse{Accepted: true, Message: "ok"}, nil
+		}
+		rpcServer.JoinHandler = func(req clusterRPC.JoinRequest) (clusterRPC.JoinResponse, error) {
+			return clusterRPC.JoinResponse{Accepted: true, Message: "ok"}, nil
+		}
+		rpcServer.LeaveHandler = func(req clusterRPC.LeaveRequest) (clusterRPC.LeaveResponse, error) {
+			return clusterRPC.LeaveResponse{Accepted: true, Message: "ok"}, nil
+		}
 	}
 	rpcServer.AppendHandler = func(req clusterRPC.AppendEntriesRequest) (clusterRPC.AppendEntriesResponse, error) {
 		return clusterRPC.AppendEntriesResponse{Accepted: true, Message: "ok"}, nil
+	}
+	rpcServer.KVGetHandler = func(req clusterRPC.KVGetRequest) (clusterRPC.KVGetResponse, error) {
+		if store == nil {
+			return clusterRPC.KVGetResponse{Error: "storage unavailable"}, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		rec, err := store.Get(ctx, storage.Key(req.Key))
+		if err != nil {
+			return clusterRPC.KVGetResponse{Error: err.Error()}, nil
+		}
+		return clusterRPC.KVGetResponse{Value: rec.Value, Found: true}, nil
+	}
+	rpcServer.KVPutHandler = func(req clusterRPC.KVPutRequest) (clusterRPC.KVPutResponse, error) {
+		if store == nil {
+			return clusterRPC.KVPutResponse{Error: "storage unavailable"}, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		rec := storage.Record{Key: storage.Key(req.Key), Value: storage.Value(req.Value)}
+		if err := store.Put(ctx, rec); err != nil {
+			return clusterRPC.KVPutResponse{Error: err.Error()}, nil
+		}
+		if _, err := store.Get(ctx, storage.Key(req.Key)); err != nil {
+			return clusterRPC.KVPutResponse{Error: "storage write verification failed"}, nil
+		}
+		return clusterRPC.KVPutResponse{Success: true}, nil
+	}
+	rpcServer.KVDeleteHandler = func(req clusterRPC.KVDeleteRequest) (clusterRPC.KVDeleteResponse, error) {
+		if store == nil {
+			return clusterRPC.KVDeleteResponse{Error: "storage unavailable"}, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := store.Delete(ctx, storage.Key(req.Key)); err != nil {
+			return clusterRPC.KVDeleteResponse{Error: err.Error()}, nil
+		}
+		return clusterRPC.KVDeleteResponse{Success: true}, nil
+	}
+	rpcServer.ReplicaPutHandler = func(req clusterRPC.ReplicaPutRequest) (clusterRPC.ReplicaPutResponse, error) {
+		if store == nil {
+			return clusterRPC.ReplicaPutResponse{Error: "storage unavailable"}, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		rec := storage.Record{Key: storage.Key(req.Key), Value: storage.Value(req.Value)}
+		if err := store.Put(ctx, rec); err != nil {
+			return clusterRPC.ReplicaPutResponse{Error: err.Error()}, nil
+		}
+		if _, err := store.Get(ctx, storage.Key(req.Key)); err != nil {
+			return clusterRPC.ReplicaPutResponse{Error: "storage write verification failed"}, nil
+		}
+		return clusterRPC.ReplicaPutResponse{Success: true}, nil
+	}
+	rpcServer.ReplicaDeleteHandler = func(req clusterRPC.ReplicaDeleteRequest) (clusterRPC.ReplicaDeleteResponse, error) {
+		if store == nil {
+			return clusterRPC.ReplicaDeleteResponse{Error: "storage unavailable"}, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := store.Delete(ctx, storage.Key(req.Key)); err != nil {
+			return clusterRPC.ReplicaDeleteResponse{Error: err.Error()}, nil
+		}
+		return clusterRPC.ReplicaDeleteResponse{Success: true}, nil
 	}
 	mux.Handle("/cluster/", rpcServer.Handler())
 

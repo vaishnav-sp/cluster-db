@@ -15,6 +15,11 @@ type Server struct {
 	JoinHandler      func(JoinRequest) (JoinResponse, error)
 	LeaveHandler     func(LeaveRequest) (LeaveResponse, error)
 	AppendHandler    func(AppendEntriesRequest) (AppendEntriesResponse, error)
+	KVGetHandler     func(KVGetRequest) (KVGetResponse, error)
+	KVPutHandler     func(KVPutRequest) (KVPutResponse, error)
+	KVDeleteHandler  func(KVDeleteRequest) (KVDeleteResponse, error)
+	ReplicaPutHandler    func(ReplicaPutRequest) (ReplicaPutResponse, error)
+	ReplicaDeleteHandler func(ReplicaDeleteRequest) (ReplicaDeleteResponse, error)
 }
 
 // NewServer creates a new RPC server with no-op handlers by default.
@@ -29,6 +34,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/cluster/leave", s.handleLeave)
 	mux.HandleFunc("/cluster/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("/cluster/append", s.handleAppend)
+	mux.HandleFunc("/cluster/kv/get", s.handleKVGet)
+	mux.HandleFunc("/cluster/kv/put", s.handleKVPut)
+	mux.HandleFunc("/cluster/kv/delete", s.handleKVDelete)
+	mux.HandleFunc("/cluster/replica/put", s.handleReplicaPut)
+	mux.HandleFunc("/cluster/replica/delete", s.handleReplicaDelete)
 	return mux
 }
 
@@ -180,3 +190,115 @@ func validateAppendRequest(req AppendEntriesRequest) error {
 	}
 	return nil
 }
+
+func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, KVGetResponse{Error: "method not allowed"})
+		return
+	}
+	var req KVGetRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, KVGetResponse{Error: err.Error()})
+		return
+	}
+	if s.KVGetHandler == nil {
+		writeJSON(w, http.StatusNotImplemented, KVGetResponse{Error: "handler not implemented"})
+		return
+	}
+	resp, err := s.KVGetHandler(req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, KVGetResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, KVPutResponse{Error: "method not allowed"})
+		return
+	}
+	var req KVPutRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, KVPutResponse{Error: err.Error()})
+		return
+	}
+	if s.KVPutHandler == nil {
+		writeJSON(w, http.StatusNotImplemented, KVPutResponse{Error: "handler not implemented"})
+		return
+	}
+	resp, err := s.KVPutHandler(req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, KVPutResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, KVDeleteResponse{Error: "method not allowed"})
+		return
+	}
+	var req KVDeleteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, KVDeleteResponse{Error: err.Error()})
+		return
+	}
+	if s.KVDeleteHandler == nil {
+		writeJSON(w, http.StatusNotImplemented, KVDeleteResponse{Error: "handler not implemented"})
+		return
+	}
+	resp, err := s.KVDeleteHandler(req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, KVDeleteResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleReplicaPut(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, ReplicaPutResponse{Error: "method not allowed"})
+		return
+	}
+	var req ReplicaPutRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ReplicaPutResponse{Error: err.Error()})
+		return
+	}
+	if s.ReplicaPutHandler == nil {
+		writeJSON(w, http.StatusNotImplemented, ReplicaPutResponse{Error: "handler not implemented"})
+		return
+	}
+	resp, err := s.ReplicaPutHandler(req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ReplicaPutResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleReplicaDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, ReplicaDeleteResponse{Error: "method not allowed"})
+		return
+	}
+	var req ReplicaDeleteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ReplicaDeleteResponse{Error: err.Error()})
+		return
+	}
+	if s.ReplicaDeleteHandler == nil {
+		writeJSON(w, http.StatusNotImplemented, ReplicaDeleteResponse{Error: "handler not implemented"})
+		return
+	}
+	resp, err := s.ReplicaDeleteHandler(req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ReplicaDeleteResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+

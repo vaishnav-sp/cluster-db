@@ -29,11 +29,6 @@ func New(version string) (*Application, error) {
 		return nil, fmt.Errorf("%w: %s", ErrStorageInitialization, err)
 	}
 
-	httpServer, err := server.New(cfg.Server, log, version, startedAt, storageManager)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrServerInitialization, err)
-	}
-
 	clusterManager := cluster.NewManager(
 		cluster.NewMembership(),
 		log,
@@ -42,6 +37,12 @@ func New(version string) (*Application, error) {
 		cfg.Cluster.NodeID,
 		cfg.Cluster.NodeAddress,
 	)
+	clusterManager.ReplicationFactor = cfg.Cluster.ReplicationFactor
+
+	httpServer, err := server.New(cfg.Server, log, version, startedAt, storageManager, clusterManager)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrServerInitialization, err)
+	}
 
 	app := &Application{
 		Config:      cfg,

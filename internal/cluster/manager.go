@@ -14,17 +14,18 @@ import (
 
 // Manager coordinates the in-memory membership state with a simple monitor loop.
 type Manager struct {
-	mu             sync.RWMutex
-	membership     *Membership
-	logger         *zap.Logger
-	stopCh         chan struct{}
-	stoppedCh      chan struct{}
-	heartbeatTick  time.Duration
-	failureTimeout time.Duration
-	localNodeID    string
-	localAddress   string
-	started        bool
-	hashRing       *clusterhashring.HashRing
+	mu                sync.RWMutex
+	membership        *Membership
+	logger            *zap.Logger
+	stopCh            chan struct{}
+	stoppedCh         chan struct{}
+	heartbeatTick     time.Duration
+	failureTimeout    time.Duration
+	localNodeID       string
+	localAddress      string
+	started           bool
+	hashRing          *clusterhashring.HashRing
+	ReplicationFactor int
 }
 
 // NewManager creates a cluster manager with the provided membership state.
@@ -307,6 +308,34 @@ func (m *Manager) Owner(key string) (Node, bool) {
 	}
 	return node, true
 }
+
+// Owners returns the list of nodes responsible for the key (primary + replicas).
+func (m *Manager) Owners(key string, replicationFactor int) ([]Node, bool) {
+	m.syncHashRing()
+	m.mu.RLock()
+	ring := m.hashRing
+	m.mu.RUnlock()
+
+	if ring == nil {
+		return nil, false
+	}
+	nodeIDs, ok := ring.ReplicaOwners(key, replicationFactor)
+	if !ok {
+		return nil, false
+	}
+	var nodes []Node
+	for _, id := range nodeIDs {
+		node, found := m.membership.GetNode(id)
+		if found {
+			nodes = append(nodes, node)
+		}
+	}
+	if len(nodes) == 0 {
+		return nil, false
+	}
+	return nodes, true
+}
+
 
 // LocalNode returns the node that represents the local manager instance.
 func (m *Manager) LocalNode() Node {

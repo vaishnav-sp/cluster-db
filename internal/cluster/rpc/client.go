@@ -82,3 +82,50 @@ func (c *Client) doJSON(ctx context.Context, address, path string, payload any, 
 	}
 	return nil
 }
+
+// KVGet sends a KV get request to a cluster node.
+func (c *Client) KVGet(ctx context.Context, address string, req KVGetRequest) (KVGetResponse, error) {
+	var resp KVGetResponse
+	if err := c.doJSON(ctx, address, "/cluster/kv/get", req, &resp); err != nil {
+		return KVGetResponse{}, err
+	}
+	return resp, nil
+}
+
+// KVPut sends a KV put request to a cluster node.
+func (c *Client) KVPut(ctx context.Context, address string, req KVPutRequest) (KVPutResponse, error) {
+	var resp KVPutResponse
+	if err := c.doJSON(ctx, address, "/cluster/kv/put", req, &resp); err != nil {
+		return KVPutResponse{}, err
+	}
+	return resp, nil
+}
+
+// KVDelete sends a KV delete request to a cluster node.
+func (c *Client) KVDelete(ctx context.Context, address string, req KVDeleteRequest) (KVDeleteResponse, error) {
+	var resp KVDeleteResponse
+	if err := c.doJSON(ctx, address, "/cluster/kv/delete", req, &resp); err != nil {
+		return KVDeleteResponse{}, err
+	}
+	return resp, nil
+}
+
+// ReplicaPut sends a replicated KV write to a replica node.
+func (c *Client) ReplicaPut(ctx context.Context, address string, req ReplicaPutRequest) (ReplicaPutResponse, error) {
+	var resp ReplicaPutResponse
+	if err := c.doJSON(ctx, address, "/cluster/replica/put", req, &resp); err != nil {
+		return ReplicaPutResponse{}, err
+	}
+	return resp, nil
+}
+
+// ReplicaDelete sends a replicated KV delete to a replica node.
+func (c *Client) ReplicaDelete(ctx context.Context, address string, req ReplicaDeleteRequest) (ReplicaDeleteResponse, error) {
+	var resp ReplicaDeleteResponse
+	if err := c.doJSON(ctx, address, "/cluster/replica/delete", req, &resp); err != nil {
+		return ReplicaDeleteResponse{}, err
+	}
+	return resp, nil
+}
+
+

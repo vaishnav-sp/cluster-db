@@ -114,3 +114,41 @@ func (r *HashRing) Count() int {
 func (r *HashRing) virtualKey(nodeID string, replica int) uint32 {
 	return crc32.ChecksumIEEE([]byte(nodeID + "#" + string(rune('0'+replica))))
 }
+
+// ReplicaOwners returns the list of nodes responsible for the given key, starting with the primary owner followed by the replica owners.
+func (r *HashRing) ReplicaOwners(key string, replicationFactor int) ([]string, bool) {
+	if key == "" || replicationFactor <= 0 {
+		return nil, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.ring) == 0 {
+		return nil, false
+	}
+
+	hashed := crc32.ChecksumIEEE([]byte(key))
+	startIdx := sort.Search(len(r.ring), func(i int) bool {
+		return r.ring[i].key >= hashed
+	})
+	if startIdx == len(r.ring) {
+		startIdx = 0
+	}
+
+	seen := make(map[string]struct{})
+	var owners []string
+
+	n := len(r.ring)
+	for i := 0; i < n; i++ {
+		idx := (startIdx + i) % n
+		node := r.ring[idx].node
+		if _, exists := seen[node]; !exists {
+			seen[node] = struct{}{}
+			owners = append(owners, node)
+			if len(owners) == replicationFactor {
+				break
+			}
+		}
+	}
+	return owners, true
+}
+
