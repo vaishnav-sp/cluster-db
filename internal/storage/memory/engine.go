@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/vaishnav-sp/cluster-db/internal/storage"
+	"github.com/vaishnav-sp/cluster-db/internal/storage/checkpoint"
 	"github.com/vaishnav-sp/cluster-db/internal/storage/wal"
 )
 
@@ -35,11 +36,23 @@ type Engine struct {
 	wal       *wal.Writer
 	open      bool
 	createdAt time.Time
+
+	checkpointCount int64
+	replayDuration  time.Duration
+	lastCheckpoint  time.Time
+	maintenanceStop context.CancelFunc
+	maintenanceDone chan struct{}
+	checkpoint      *checkpoint.Checkpoint
 }
 
 // Config configures optional persistence for Engine.
 type Config struct {
-	WAL WALConfig
+	WAL                WALConfig
+	CheckpointEnabled  bool
+	CheckpointInterval time.Duration
+	CheckpointSize     int64
+	WALMaxSegmentSize  int64
+	WALMaxSegments     int
 }
 
 // WALConfig controls the memory engine's write-ahead log.
@@ -84,6 +97,7 @@ func (e *Engine) Open(_ context.Context) error {
 
 	e.open = true
 	e.createdAt = time.Now()
+	e.startMaintenanceLocked()
 
 	return nil
 }
@@ -93,15 +107,38 @@ func (e *Engine) Open(_ context.Context) error {
 func (e *Engine) Close(_ context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if !e.open {
+		return nil
+	}
+	e.open = false
+	stop := e.maintenanceStop
+	done := e.maintenanceDone
+	e.maintenanceStop = nil
+	e.maintenanceDone = nil
+	if stop != nil {
+		stop()
+	}
+	e.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.wal != nil {
+		if err := e.wal.Sync(); err != nil {
+			return fmt.Errorf("memory engine: sync WAL: %w", err)
+		}
 		if err := e.wal.Close(); err != nil {
 			return fmt.Errorf("memory engine: close WAL: %w", err)
 		}
 		e.wal = nil
 	}
-	e.open = false
-
+	if e.cfg.WAL.Enabled && e.cfg.CheckpointEnabled && e.walSizeLocked() > 0 {
+		if err := e.createCheckpointLocked(); err != nil {
+			return fmt.Errorf("memory engine: final checkpoint: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -144,6 +181,9 @@ func (e *Engine) Put(_ context.Context, rec storage.Record) error {
 	rec.Value = copyBytes(rec.Value)
 
 	e.store[k] = rec
+	if err := e.maybeCheckpointLocked(false); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -189,6 +229,9 @@ func (e *Engine) Delete(_ context.Context, key storage.Key) error {
 	}
 
 	delete(e.store, string(key))
+	if err := e.maybeCheckpointLocked(false); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -242,12 +285,17 @@ func (e *Engine) Stats(_ context.Context) (storage.Stats, error) {
 	}
 
 	return storage.Stats{
-		Keys:    int64(len(e.store)),
-		Size:    size,
-		Engine:  engineName,
-		Version: engineVersion,
-		Created: e.createdAt,
-		Healthy: true,
+		Keys:            int64(len(e.store)),
+		Size:            size,
+		Engine:          engineName,
+		Version:         engineVersion,
+		Created:         e.createdAt,
+		Healthy:         true,
+		CheckpointCount: e.checkpointCount,
+		WALSize:         e.walSizeLocked(),
+		ReplayDuration:  e.replayDuration,
+		LastCheckpoint:  e.lastCheckpoint,
+		WALSegments:     int64(len(e.walSegmentPathsLocked()) + boolToInt(e.wal != nil)),
 	}, nil
 }
 
@@ -300,11 +348,24 @@ func (e *Engine) openWALLocked() error {
 	}
 
 	store := make(map[string]storage.Record)
-	info, err := file.Stat()
-	if err == nil && info.Size() > 0 {
-		err = replay(io.NewSectionReader(file, 0, info.Size()), store)
+	started := time.Now()
+	var checkpointTime time.Time
+	if cp, err := checkpoint.New(e.checkpointPath()); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("memory engine: init checkpoint: %w", err)
+	} else {
+		e.checkpoint = cp
+		if state, ts, loadErr := cp.LoadWithTimestamp(); loadErr == nil {
+			for key, record := range state {
+				store[key] = record
+			}
+			checkpointTime = ts
+		} else if !os.IsNotExist(loadErr) {
+			_ = file.Close()
+			return fmt.Errorf("memory engine: load checkpoint: %w", loadErr)
+		}
 	}
-	if err != nil {
+	if err := e.replayStateLocked(file, store, checkpointTime); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("memory engine: replay WAL: %w", err)
 	}
@@ -319,6 +380,7 @@ func (e *Engine) openWALLocked() error {
 	}
 	e.store = store
 	e.wal = writer
+	e.replayDuration = time.Since(started)
 	return nil
 }
 
@@ -327,6 +389,9 @@ func (e *Engine) openWALLocked() error {
 func (e *Engine) appendWALLocked(op wal.OperationType, key, value []byte, timestamp time.Time) error {
 	if e.wal == nil {
 		return nil
+	}
+	if err := e.rotateWALIfNeededLocked(); err != nil {
+		return err
 	}
 	if err := e.wal.Append(wal.WALRecord{Operation: op, Timestamp: timestamp, Key: key, Value: value}); err != nil {
 		return fmt.Errorf("memory engine: append WAL: %w", err)
@@ -337,6 +402,230 @@ func (e *Engine) appendWALLocked(op wal.OperationType, key, value []byte, timest
 		}
 	}
 	return nil
+}
+
+func (e *Engine) startMaintenanceLocked() {
+	if !e.cfg.WAL.Enabled || !e.cfg.CheckpointEnabled || e.cfg.CheckpointInterval <= 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.maintenanceStop = cancel
+	e.maintenanceDone = make(chan struct{})
+	interval := e.cfg.CheckpointInterval
+	go func(done chan<- struct{}) {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				e.mu.Lock()
+				if e.open {
+					_ = e.maybeCheckpointLocked(true)
+				}
+				e.mu.Unlock()
+			}
+		}
+	}(e.maintenanceDone)
+}
+
+func (e *Engine) checkpointPath() string {
+	if e.cfg.WAL.Path == "" {
+		return ""
+	}
+	return e.cfg.WAL.Path + ".checkpoint"
+}
+
+func (e *Engine) replayStateLocked(file *os.File, store map[string]storage.Record, since time.Time) error {
+	for _, path := range e.walSegmentPathsLocked() {
+		segmentFile, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("memory engine: open WAL segment %s: %w", path, err)
+		}
+		if err := replay(segmentFile, store, since); err != nil {
+			_ = segmentFile.Close()
+			return fmt.Errorf("memory engine: replay WAL segment %s: %w", path, err)
+		}
+		if err := segmentFile.Close(); err != nil {
+			return fmt.Errorf("memory engine: close WAL segment %s: %w", path, err)
+		}
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("memory engine: seek WAL start: %w", err)
+	}
+	if err := replay(file, store, since); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e *Engine) maybeCheckpointLocked(force bool) error {
+	if !e.cfg.WAL.Enabled || !e.cfg.CheckpointEnabled || e.cfg.WAL.Path == "" {
+		return nil
+	}
+	if !force && e.cfg.CheckpointSize > 0 {
+		if size := e.walSizeLocked(); size < e.cfg.CheckpointSize {
+			return nil
+		}
+	}
+	return e.createCheckpointLocked()
+}
+
+func (e *Engine) createCheckpointLocked() error {
+	if e.checkpoint == nil {
+		cp, err := checkpoint.New(e.checkpointPath())
+		if err != nil {
+			return err
+		}
+		e.checkpoint = cp
+	}
+	if err := e.checkpoint.Save(e.store); err != nil {
+		return err
+	}
+	e.checkpointCount++
+	e.lastCheckpoint = time.Now().UTC()
+	if e.wal != nil {
+		if err := e.resetWALLocked(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) resetWALLocked() error {
+	if e.wal != nil {
+		if err := e.wal.Close(); err != nil {
+			return fmt.Errorf("memory engine: close WAL for checkpoint: %w", err)
+		}
+		e.wal = nil
+	}
+	file, err := os.OpenFile(e.cfg.WAL.Path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("memory engine: reset WAL: %w", err)
+	}
+	writer, err := wal.NewWriter(file)
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("memory engine: create WAL writer: %w", err)
+	}
+	e.wal = writer
+	return nil
+}
+
+func (e *Engine) rotateWALIfNeededLocked() error {
+	if e.wal == nil || e.cfg.WAL.Path == "" || e.cfg.WALMaxSegmentSize <= 0 || e.cfg.WALMaxSegments <= 0 {
+		return nil
+	}
+	if size := e.walSizeLocked(); size < e.cfg.WALMaxSegmentSize {
+		return nil
+	}
+	if err := e.wal.Sync(); err != nil {
+		return fmt.Errorf("memory engine: sync WAL before rotation: %w", err)
+	}
+	if err := e.wal.Close(); err != nil {
+		return fmt.Errorf("memory engine: close WAL before rotation: %w", err)
+	}
+	e.wal = nil
+	if err := e.rotateWALFilesLocked(); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(e.cfg.WAL.Path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("memory engine: open rotated WAL: %w", err)
+	}
+	writer, err := wal.NewWriter(file)
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("memory engine: create rotated WAL writer: %w", err)
+	}
+	e.wal = writer
+	return nil
+}
+
+func (e *Engine) rotateWALFilesLocked() error {
+	maxSegments := e.cfg.WALMaxSegments
+	if maxSegments <= 0 {
+		return nil
+	}
+	for index := maxSegments; index >= 2; index-- {
+		src := e.segmentPath(index - 1)
+		dst := e.segmentPath(index)
+		if _, err := os.Stat(src); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("memory engine: stat WAL segment %s: %w", src, err)
+		}
+		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("memory engine: remove WAL segment %s: %w", dst, err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("memory engine: rotate WAL segment %s: %w", src, err)
+		}
+	}
+	if _, err := os.Stat(e.cfg.WAL.Path); err == nil {
+		if err := os.Remove(e.segmentPath(1)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("memory engine: remove WAL segment %s: %w", e.segmentPath(1), err)
+		}
+		if err := os.Rename(e.cfg.WAL.Path, e.segmentPath(1)); err != nil {
+			return fmt.Errorf("memory engine: rotate active WAL: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("memory engine: stat active WAL: %w", err)
+	}
+	return nil
+}
+
+func (e *Engine) walSizeLocked() int64 {
+	var size int64
+	for _, path := range e.walPathsLocked() {
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return 0
+		}
+		size += info.Size()
+	}
+	return size
+}
+
+func (e *Engine) walPathsLocked() []string {
+	paths := make([]string, 0, e.cfg.WALMaxSegments+1)
+	if e.cfg.WAL.Path != "" {
+		paths = append(paths, e.cfg.WAL.Path)
+	}
+	for index := 1; index <= e.cfg.WALMaxSegments; index++ {
+		paths = append(paths, e.segmentPath(index))
+	}
+	return paths
+}
+
+func (e *Engine) walSegmentPathsLocked() []string {
+	paths := make([]string, 0, e.cfg.WALMaxSegments)
+	for index := 1; index <= e.cfg.WALMaxSegments; index++ {
+		path := e.segmentPath(index)
+		if _, err := os.Stat(path); err == nil {
+			paths = append(paths, path)
+		} else if !os.IsNotExist(err) {
+			return nil
+		}
+	}
+	return paths
+}
+
+func (e *Engine) segmentPath(index int) string {
+	return fmt.Sprintf("%s.%d", e.cfg.WAL.Path, index)
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // collectRecords gathers and filters records from the store according to opts.

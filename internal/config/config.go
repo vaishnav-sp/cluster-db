@@ -39,13 +39,18 @@ type ClusterConfig struct {
 type StorageConfig struct {
 	// Engine selects the storage backend. Supported values: "memory".
 	// Future values: "badger", "pebble", "rocksdb".
-	Engine           string    `mapstructure:"engine"`
-	DataDirectory    string    `mapstructure:"data_directory"`
-	SyncWrites       bool      `mapstructure:"sync_writes"`
-	MaxOpenFiles     int       `mapstructure:"max_open_files"`
-	ValueLogFileSize int       `mapstructure:"value_log_file_size"`
-	Compression      string    `mapstructure:"compression"`
-	WAL              WALConfig `mapstructure:"wal"`
+	Engine             string        `mapstructure:"engine"`
+	DataDirectory      string        `mapstructure:"data_directory"`
+	SyncWrites         bool          `mapstructure:"sync_writes"`
+	MaxOpenFiles       int           `mapstructure:"max_open_files"`
+	ValueLogFileSize   int           `mapstructure:"value_log_file_size"`
+	Compression        string        `mapstructure:"compression"`
+	WAL                WALConfig     `mapstructure:"wal"`
+	CheckpointEnabled  bool          `mapstructure:"checkpoint_enabled"`
+	CheckpointInterval time.Duration `mapstructure:"checkpoint_interval"`
+	CheckpointSize     int64         `mapstructure:"checkpoint_size"`
+	WALMaxSegmentSize  int64         `mapstructure:"wal_max_segment_size"`
+	WALMaxSegments     int           `mapstructure:"wal_max_segments"`
 }
 
 // WALConfig controls write-ahead-log persistence for storage engines that

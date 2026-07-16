@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/vaishnav-sp/cluster-db/internal/storage"
 	"github.com/vaishnav-sp/cluster-db/internal/storage/wal"
@@ -10,13 +11,16 @@ import (
 
 // replay reads WAL records in order and applies them to store. It performs no
 // recovery or repair: any reader error aborts engine startup.
-func replay(source io.Reader, store map[string]storage.Record) error {
+func replay(source io.Reader, store map[string]storage.Record, since time.Time) error {
 	reader, err := wal.NewReader(source)
 	if err != nil {
 		return fmt.Errorf("create reader: %w", err)
 	}
 	for reader.Next() {
 		record := reader.Record()
+		if !record.Timestamp.IsZero() && !record.Timestamp.After(since) && !record.Timestamp.Equal(since) {
+			continue
+		}
 		key := string(record.Key)
 		switch record.Operation {
 		case wal.OperationPut:

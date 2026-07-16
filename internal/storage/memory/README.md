@@ -119,3 +119,18 @@ func setupEngine(t *testing.T) storage.Engine {
     return eng
 }
 ```
+
+### Checkpoint and WAL lifecycle
+
+With checkpointing enabled, the engine periodically checks the total WAL size.
+Once it reaches `storage.checkpoint_size`, it writes a complete, sorted snapshot
+to `<wal path>.checkpoint`, synchronizes it, resets the active WAL, and removes
+obsolete rotated segments. WAL files rotate into numbered segments when
+`storage.wal_max_segment_size` is reached; `storage.wal_max_segments` bounds
+the number retained before a checkpoint compacts them.
+
+On startup, recovery first loads the checkpoint, then replays numbered WAL
+segments in order, and finally replays the active WAL. A corrupt checkpoint or
+segment stops startup rather than exposing incomplete state. Background
+maintenance performs the same size check at `storage.checkpoint_interval` and
+is stopped before the WAL is closed.

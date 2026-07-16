@@ -85,6 +85,17 @@ type Stats struct {
 
 	// Healthy indicates whether the engine is currently operational.
 	Healthy bool
+
+	// CheckpointCount is the number of successful checkpoints since opening.
+	CheckpointCount int64
+	// WALSize is the total size in bytes of active and rotated WAL segments.
+	WALSize int64
+	// ReplayDuration is the time spent recovering checkpoint and WAL state.
+	ReplayDuration time.Duration
+	// LastCheckpoint is the time of the latest successful checkpoint.
+	LastCheckpoint time.Time
+	// WALSegments is the number of active and rotated WAL files.
+	WALSegments int64
 }
 
 // Health is a lightweight liveness snapshot for a storage engine.

@@ -34,6 +34,11 @@ func Defaults() Config {
 				Path:        "./data/clusterdb.wal",
 				SyncOnWrite: true,
 			},
+			CheckpointEnabled:  true,
+			CheckpointInterval: time.Minute,
+			CheckpointSize:     64 * 1024 * 1024,
+			WALMaxSegmentSize:  16 * 1024 * 1024,
+			WALMaxSegments:     4,
 		},
 		Logging: LoggingConfig{
 			Level:            "info",

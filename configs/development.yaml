@@ -26,6 +26,11 @@ storage:
     enabled: true
     path: ./data/clusterdb.wal
     sync_on_write: false
+  checkpoint_enabled: true
+  checkpoint_interval: 1m
+  checkpoint_size: 67108864
+  wal_max_segment_size: 16777216
+  wal_max_segments: 4
 
 logging:
   level: info

@@ -43,6 +43,11 @@ func Build(cfg config.StorageConfig) (storage.Engine, error) {
 				Path:        cfg.WAL.Path,
 				SyncOnWrite: cfg.WAL.SyncOnWrite,
 			},
+			CheckpointEnabled:  cfg.CheckpointEnabled,
+			CheckpointInterval: cfg.CheckpointInterval,
+			CheckpointSize:     cfg.CheckpointSize,
+			WALMaxSegmentSize:  cfg.WALMaxSegmentSize,
+			WALMaxSegments:     cfg.WALMaxSegments,
 		}), nil
 
 	// case EngineBadger:

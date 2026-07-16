@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -10,7 +11,7 @@ func TestLoadDevelopmentWALConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(root)
+	chdirToRoot(t, root)
 	t.Setenv("APP_ENV", "development")
 
 	cfg, err := Load()
@@ -27,7 +28,7 @@ func TestLoadWALConfigurationFromEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(root)
+	chdirToRoot(t, root)
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("CLUSTERDB_STORAGE_WAL_ENABLED", "false")
 	t.Setenv("CLUSTERDB_STORAGE_WAL_PATH", "test.wal")
@@ -40,4 +41,16 @@ func TestLoadWALConfigurationFromEnvironment(t *testing.T) {
 	if cfg.Storage.WAL.Enabled || cfg.Storage.WAL.Path != "test.wal" || !cfg.Storage.WAL.SyncOnWrite {
 		t.Fatalf("environment WAL config = %#v", cfg.Storage.WAL)
 	}
+}
+
+func chdirToRoot(t *testing.T, root string) {
+	t.Helper()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
 }

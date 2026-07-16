@@ -68,6 +68,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("storage.wal.enabled", false)
 	v.SetDefault("storage.wal.path", "./data/clusterdb.wal")
 	v.SetDefault("storage.wal.sync_on_write", true)
+	v.SetDefault("storage.checkpoint_enabled", true)
+	v.SetDefault("storage.checkpoint_interval", time.Minute)
+	v.SetDefault("storage.checkpoint_size", int64(64*1024*1024))
+	v.SetDefault("storage.wal_max_segment_size", int64(16*1024*1024))
+	v.SetDefault("storage.wal_max_segments", 4)
 
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.encoding", "json")
@@ -117,6 +122,11 @@ func bindEnvironmentVariables(v *viper.Viper) {
 		"storage.wal.enabled",
 		"storage.wal.path",
 		"storage.wal.sync_on_write",
+		"storage.checkpoint_enabled",
+		"storage.checkpoint_interval",
+		"storage.checkpoint_size",
+		"storage.wal_max_segment_size",
+		"storage.wal_max_segments",
 		"logging.level",
 		"logging.encoding",
 		"logging.development",
