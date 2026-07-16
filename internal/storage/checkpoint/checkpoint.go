@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/vaishnav-sp/cluster-db/internal/storage"
@@ -63,7 +64,7 @@ func (c *Checkpoint) Save(state map[string]storage.Record) error {
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("checkpoint: close temp file: %w", err)
 	}
-	if err := os.Rename(tempPath, c.path); err != nil {
+	if err := replaceFile(tempPath, c.path); err != nil {
 		return fmt.Errorf("checkpoint: rename temp file: %w", err)
 	}
 	if err := syncDir(filepath.Dir(c.path)); err != nil {
@@ -126,12 +127,24 @@ func (c *Checkpoint) ensureDir() error {
 }
 
 func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	file, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 	return file.Sync()
+}
+
+func replaceFile(src, dst string) error {
+	if runtime.GOOS == "windows" {
+		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return os.Rename(src, dst)
 }
 
 type checkpointData struct {

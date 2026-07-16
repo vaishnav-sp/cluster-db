@@ -106,8 +106,8 @@ func (e *Engine) Open(_ context.Context) error {
 // storage.ErrEngineClosed. Calling Close more than once is safe.
 func (e *Engine) Close(_ context.Context) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if !e.open {
+		e.mu.Unlock()
 		return nil
 	}
 	e.open = false
@@ -618,7 +618,7 @@ func (e *Engine) walSegmentPathsLocked() []string {
 }
 
 func (e *Engine) segmentPath(index int) string {
-	return fmt.Sprintf("%s.%d", e.cfg.WAL.Path, index)
+	return fmt.Sprintf("%s.%06d", e.cfg.WAL.Path, index)
 }
 
 func boolToInt(value bool) int {
