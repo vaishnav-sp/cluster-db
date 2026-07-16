@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vaishnav-sp/cluster-db/internal/cluster"
 	"github.com/vaishnav-sp/cluster-db/internal/config"
 	"github.com/vaishnav-sp/cluster-db/internal/logger"
 	"github.com/vaishnav-sp/cluster-db/internal/server"
@@ -32,15 +33,22 @@ func New(version string) (*Application, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrServerInitialization, err)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrStorageInitialization, err)
-	}
+
+	clusterManager := cluster.NewManager(
+		cluster.NewMembership(),
+		log,
+		cfg.Cluster.HeartbeatInterval,
+		cfg.Cluster.FailureTimeout,
+		cfg.Cluster.NodeID,
+		cfg.Cluster.NodeAddress,
+	)
 
 	app := &Application{
 		Config:      cfg,
 		Logger:      log,
 		Server:      httpServer,
 		Storage:     storageManager,
+		Cluster:     clusterManager,
 		StartedAt:   startedAt,
 		Version:     version,
 		Environment: cfg.Server.Environment,

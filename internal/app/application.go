@@ -5,6 +5,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vaishnav-sp/cluster-db/internal/cluster"
 	"github.com/vaishnav-sp/cluster-db/internal/config"
 	"github.com/vaishnav-sp/cluster-db/internal/server"
 	"github.com/vaishnav-sp/cluster-db/internal/storage/manager"
@@ -16,6 +17,7 @@ type Application struct {
 	Logger      *zap.Logger
 	Server      *server.Server
 	Storage     *manager.Manager
+	Cluster     *cluster.Manager
 	StartedAt   time.Time
 	Version     string
 	Environment string

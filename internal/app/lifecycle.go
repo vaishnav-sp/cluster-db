@@ -31,6 +31,10 @@ func (a *Application) Run() error {
 		return fmt.Errorf("open storage: %w", err)
 	}
 
+	if err := a.Cluster.Start(context.Background()); err != nil {
+		return fmt.Errorf("start cluster manager: %w", err)
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -59,6 +63,8 @@ func (a *Application) Shutdown() error {
 	if err := a.Storage.Close(ctx); err != nil {
 		a.Logger.Error("Failed to close storage engine", zap.Error(err))
 	}
+
+	a.Cluster.Stop()
 
 	a.Logger.Info("Application shutdown complete")
 	err := a.Logger.Sync()
