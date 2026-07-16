@@ -44,6 +44,7 @@ func (m *Membership) AddNode(node Node) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nodes[node.ID] = node
+	m.electLeaderLocked()
 }
 
 // RemoveNode deletes a node by id.
@@ -51,6 +52,7 @@ func (m *Membership) RemoveNode(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.nodes, id)
+	m.electLeaderLocked()
 }
 
 // GetNode returns a node by id if it exists.
@@ -83,6 +85,7 @@ func (m *Membership) UpdateHeartbeat(id string) error {
 	node.LastHeartbeat = time.Now().UTC()
 	node.Status = Alive
 	m.nodes[id] = node
+	m.electLeaderLocked()
 	return nil
 }
 
@@ -96,6 +99,7 @@ func (m *Membership) MarkSuspect(id string) error {
 	}
 	node.Status = Suspect
 	m.nodes[id] = node
+	m.electLeaderLocked()
 	return nil
 }
 
@@ -109,6 +113,7 @@ func (m *Membership) MarkDead(id string) error {
 	}
 	node.Status = Dead
 	m.nodes[id] = node
+	m.electLeaderLocked()
 	return nil
 }
 
@@ -122,6 +127,26 @@ func (m *Membership) Leader() (Node, bool) {
 		}
 	}
 	return Node{}, false
+}
+
+// ElectLeader selects the current leader deterministically from the alive nodes.
+func (m *Membership) ElectLeader() (Node, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.electLeaderLocked()
+}
+
+// CurrentLeader returns the current leader node, if one exists.
+func (m *Membership) CurrentLeader() (Node, bool) {
+	return m.Leader()
+}
+
+// IsLeader reports whether the given id is the current leader.
+func (m *Membership) IsLeader(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	leader, ok := m.Leader()
+	return ok && leader.ID == id
 }
 
 // SetLeader sets the leader flag on a node and clears it on others.
@@ -147,4 +172,43 @@ func (m *Membership) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.nodes)
+}
+
+func (m *Membership) electLeaderLocked() (Node, bool) {
+	var leader Node
+	var found bool
+	var leaderID string
+	var currentLeader Node
+	var currentLeaderFound bool
+
+	for _, node := range m.nodes {
+		if node.IsLeader {
+			currentLeader = node
+			currentLeaderFound = true
+		}
+		if node.Status != Alive {
+			continue
+		}
+		if !found || node.ID < leaderID {
+			leader = node
+			leaderID = node.ID
+			found = true
+		}
+	}
+
+	for key := range m.nodes {
+		current := m.nodes[key]
+		current.IsLeader = false
+		m.nodes[key] = current
+	}
+
+	if found {
+		leader.IsLeader = true
+		m.nodes[leader.ID] = leader
+		return leader, true
+	}
+	if currentLeaderFound {
+		return currentLeader, false
+	}
+	return Node{}, false
 }

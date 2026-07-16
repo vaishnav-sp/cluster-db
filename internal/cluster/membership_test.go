@@ -96,3 +96,86 @@ func TestMembershipListNodesReturnsSnapshot(t *testing.T) {
 		t.Fatalf("internal node status changed unexpectedly")
 	}
 }
+
+func TestElectLeaderInitialElection(t *testing.T) {
+	m := NewMembership()
+	m.AddNode(Node{ID: "node-2", Status: Alive})
+	m.AddNode(Node{ID: "node-1", Status: Alive})
+
+	leader, ok := m.ElectLeader()
+	if !ok {
+		t.Fatal("expected leader")
+	}
+	if leader.ID != "node-1" {
+		t.Fatalf("leader ID = %s, want node-1", leader.ID)
+	}
+	if !m.IsLeader("node-1") {
+		t.Fatal("node-1 should be leader")
+	}
+}
+
+func TestElectLeaderAfterLeaderRemoval(t *testing.T) {
+	m := NewMembership()
+	m.AddNode(Node{ID: "node-2", Status: Alive})
+	m.AddNode(Node{ID: "node-1", Status: Alive})
+
+	m.RemoveNode("node-1")
+	leader, ok := m.CurrentLeader()
+	if !ok || leader.ID != "node-2" {
+		t.Fatalf("leader after removal = %+v, want node-2", leader)
+	}
+}
+
+func TestElectLeaderAfterLeaderFailure(t *testing.T) {
+	m := NewMembership()
+	m.AddNode(Node{ID: "node-2", Status: Alive})
+	m.AddNode(Node{ID: "node-1", Status: Alive})
+
+	if err := m.MarkDead("node-1"); err != nil {
+		t.Fatalf("mark dead: %v", err)
+	}
+	leader, ok := m.CurrentLeader()
+	if !ok || leader.ID != "node-2" {
+		t.Fatalf("leader = %+v, want node-2", leader)
+	}
+}
+
+func TestElectLeaderWhenBetterNodeJoins(t *testing.T) {
+	m := NewMembership()
+	m.AddNode(Node{ID: "node-2", Status: Alive})
+	m.AddNode(Node{ID: "node-10", Status: Alive})
+
+	leader, ok := m.CurrentLeader()
+	if !ok || leader.ID != "node-10" {
+		t.Fatalf("leader = %+v, want node-10", leader)
+	}
+
+	m.AddNode(Node{ID: "node-1", Status: Alive})
+	leader, ok = m.CurrentLeader()
+	if !ok || leader.ID != "node-1" {
+		t.Fatalf("leader after better node join = %+v, want node-1", leader)
+	}
+}
+
+func TestElectLeaderNoAliveNodes(t *testing.T) {
+	m := NewMembership()
+	m.AddNode(Node{ID: "node-1", Status: Suspect})
+	m.AddNode(Node{ID: "node-2", Status: Dead})
+
+	if _, ok := m.CurrentLeader(); ok {
+		t.Fatal("expected no leader when no nodes are alive")
+	}
+}
+
+func TestElectLeaderDeterministicAcrossCalls(t *testing.T) {
+	m := NewMembership()
+	m.AddNode(Node{ID: "node-3", Status: Alive})
+	m.AddNode(Node{ID: "node-1", Status: Alive})
+	m.AddNode(Node{ID: "node-2", Status: Alive})
+
+	first, _ := m.ElectLeader()
+	second, _ := m.ElectLeader()
+	if first.ID != second.ID || first.ID != "node-1" {
+		t.Fatalf("leader should remain deterministic, got %s and %s", first.ID, second.ID)
+	}
+}
