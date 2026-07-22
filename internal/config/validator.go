@@ -61,6 +61,37 @@ func Validate(cfg Config) error {
 	if err := validateLoggingLevel(cfg.Logging.Level); err != nil {
 		return err
 	}
+	rf := cfg.Storage.ReplicationFactor
+	if rf <= 0 {
+		rf = cfg.Cluster.ReplicationFactor
+	}
+	w := cfg.Storage.WriteQuorum
+	if w <= 0 {
+		w = (rf / 2) + 1
+	}
+	r := cfg.Storage.ReadQuorum
+	if r <= 0 {
+		r = (rf / 2) + 1
+	}
+	if err := validateQuorumConfig(rf, w, r); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateQuorumConfig(rf, w, r int) error {
+	if rf < 1 {
+		return fmt.Errorf("%w: replication_factor=%d", ErrInvalidReplicationFactor, rf)
+	}
+	if w < 1 || w > rf {
+		return fmt.Errorf("invalid write_quorum=%d: must be between 1 and replication_factor=%d", w, rf)
+	}
+	if r < 1 || r > rf {
+		return fmt.Errorf("invalid read_quorum=%d: must be between 1 and replication_factor=%d", r, rf)
+	}
+	if r+w <= rf {
+		return fmt.Errorf("invalid quorum configuration: read_quorum(%d) + write_quorum(%d) must be greater than replication_factor(%d)", r, w, rf)
+	}
 	return nil
 }
 

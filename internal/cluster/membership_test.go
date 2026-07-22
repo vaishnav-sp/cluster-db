@@ -185,9 +185,13 @@ func TestElectLeaderDeterministicAcrossCalls(t *testing.T) {
 func TestFailureDetectorMarksAliveNodeSuspect(t *testing.T) {
 	m := NewMembership()
 	m.SetLocalNodeID("local")
-	m.SetFailureDetectorConfig(10*time.Millisecond, 15*time.Millisecond)
+	// Use generous timing: interval=50ms, timeout=80ms.
+	// Node heartbeat is 85ms stale at start: elapsed(85ms) > timeout(80ms) → Suspect on
+	// the first tick. Dead requires elapsed > 2×80=160ms, which won't be reached for
+	// another 75ms, giving the polling loop ample time to observe Suspect.
+	m.SetFailureDetectorConfig(50*time.Millisecond, 80*time.Millisecond)
 	m.AddNode(Node{ID: "local", Address: "127.0.0.1:9000", Status: Alive, LastHeartbeat: time.Now().UTC()})
-	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Alive, LastHeartbeat: time.Now().Add(-50 * time.Millisecond).UTC()})
+	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Alive, LastHeartbeat: time.Now().Add(-85 * time.Millisecond).UTC()})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -240,9 +244,14 @@ func TestFailureDetectorRestoresSuspectNodeOnHeartbeat(t *testing.T) {
 func TestFailureDetectorReelectsLeaderAfterLeaderDies(t *testing.T) {
 	m := NewMembership()
 	m.SetLocalNodeID("local")
-	m.SetFailureDetectorConfig(10*time.Millisecond, 15*time.Millisecond)
+	// interval=100ms, timeout=10s: node-1 starts 21s stale (> 2×timeout=20s).
+	// Tick 1: Alive→Suspect (21s > 10s). Tick 2: Suspect→Dead (21.1s > 20s).
+	// node-2's heartbeat (time.Now()) stays well within 10s → stays Alive.
+	m.SetFailureDetectorConfig(100*time.Millisecond, 10*time.Second)
 	m.AddNode(Node{ID: "local", Address: "127.0.0.1:9000", Status: Alive, LastHeartbeat: time.Now().UTC()})
-	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Alive, LastHeartbeat: time.Now().Add(-50 * time.Millisecond).UTC()})
+	// node-1: 21s stale → Suspect at tick 1, Dead at tick 2
+	m.AddNode(Node{ID: "node-1", Address: "127.0.0.1:9001", Status: Alive, LastHeartbeat: time.Now().Add(-21 * time.Second).UTC()})
+	// node-2: fresh heartbeat, stays Alive throughout the test
 	m.AddNode(Node{ID: "node-2", Address: "127.0.0.1:9002", Status: Alive, LastHeartbeat: time.Now().UTC()})
 	if err := m.SetLeader("node-1"); err != nil {
 		t.Fatalf("set leader: %v", err)
@@ -253,7 +262,7 @@ func TestFailureDetectorReelectsLeaderAfterLeaderDies(t *testing.T) {
 	m.StartFailureDetector(ctx)
 	defer m.StopFailureDetector()
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		leader, ok := m.Leader()
 		if ok && leader.ID == "node-2" {

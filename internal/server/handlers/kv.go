@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -157,46 +158,180 @@ func (h *KVHandler) handlePutRemote(w http.ResponseWriter, ctx context.Context, 
 	w.WriteHeader(http.StatusCreated)
 }
 
+// handleGet implements topology-aware read routing with failover and async read repair.
+//
+// Algorithm:
+//  1. Determine replica owners from the consistent hash ring.
+//  2. If the current node owns the key, read locally.
+//  3. Otherwise, attempt ReplicaGet on each owner in order (failover).
+//  4. If multiple replicas responded and values differ, asynchronously repair
+//     stale replicas using ReplicaPut (read repair, majority wins).
+//  5. Return 503 only when every replica fails.
 func (h *KVHandler) handleGet(w http.ResponseWriter, r *http.Request, key string) {
-	owner, local, err := h.getRoute(key)
-	if err != nil {
-		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+	if h.clusterManager == nil {
+		// No cluster: read locally.
+		h.readLocal(w, r.Context(), key)
 		return
 	}
 
-	if !local {
-		if owner.Status != cluster.Alive {
-			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": fmt.Sprintf("owner node %s is unavailable (status: %v)", owner.ID, owner.Status)})
+	owners, ok := h.clusterManager.Owners(key, h.replicationFactor())
+	if !ok || len(owners) == 0 {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no owner node found on consistent hash ring"})
+		return
+	}
+
+	localNode := h.clusterManager.LocalNode()
+
+	// Check whether the local node is one of the owners.
+	for _, o := range owners {
+		if h.clusterManager.IsLocalNode(o.ID) || (localNode.ID != "" && o.ID == localNode.ID) {
+			h.readLocal(w, r.Context(), key)
 			return
 		}
-		h.handleGetRemote(w, r.Context(), owner, key)
+	}
+
+	// Remote read with failover across owners.
+	value, err := h.replicaReadWithFailover(r.Context(), owners, key)
+	if err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "all replicas failed: " + err.Error()})
 		return
 	}
 
-	rec, err := h.manager.Get(r.Context(), storage.Key(key))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(value)
+}
+
+// readLocal reads a key from the local storage manager.
+func (h *KVHandler) readLocal(w http.ResponseWriter, ctx context.Context, key string) {
+	rec, err := h.manager.Get(ctx, storage.Key(key))
 	if err != nil {
 		h.writeStorageError(w, err)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(rec.Value)
 }
 
-func (h *KVHandler) handleGetRemote(w http.ResponseWriter, ctx context.Context, owner cluster.Node, key string) {
-	resp, err := h.client.KVGet(ctx, owner.Address, clusterRPC.KVGetRequest{Key: key})
-	if err != nil {
-		h.writeGatewayError(w, err)
+// replicaReadResult holds the outcome of a single ReplicaGet RPC call.
+type replicaReadResult struct {
+	node  cluster.Node
+	value []byte
+	found bool
+}
+
+// replicaReadWithFailover attempts ReplicaGet on each owner in order and returns
+// the first successful response.  All successful results are collected so that
+// read repair can reconcile divergent replicas asynchronously.
+func (h *KVHandler) replicaReadWithFailover(ctx context.Context, owners []cluster.Node, key string) ([]byte, error) {
+	var lastErr error
+	var successes []replicaReadResult
+
+	for _, owner := range owners {
+		if owner.Status != cluster.Alive {
+			lastErr = fmt.Errorf("node %s is not alive (status: %v)", owner.ID, owner.Status)
+			continue
+		}
+
+		resp, err := h.client.ReplicaGet(ctx, owner.Address, clusterRPC.ReplicaGetRequest{Key: key})
+		if err != nil {
+			lastErr = fmt.Errorf("node %s: %w", owner.ID, err)
+			continue
+		}
+		if resp.Error != "" {
+			lastErr = fmt.Errorf("node %s: %s", owner.ID, resp.Error)
+			continue
+		}
+		if !resp.Found {
+			// Treat not-found as a definitive answer from this replica.
+			// We still try other owners in case they have it.
+			lastErr = fmt.Errorf("node %s: key not found", owner.ID)
+			continue
+		}
+
+		successes = append(successes, replicaReadResult{node: owner, value: resp.Value, found: true})
+		break // First success: return to client immediately.
+	}
+
+	if len(successes) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("key not found on any replica")
+	}
+
+	// Collect additional results for read repair (best-effort, no blocking).
+	// Attempt remaining owners in background to detect divergence.
+	go h.asyncReadRepair(key, owners, successes[0].value)
+
+	return successes[0].value, nil
+}
+
+// asyncReadRepair polls the remaining replica owners and repairs any that hold
+// a stale value.  The majority value among all successful responses wins.
+// This function is called asynchronously and never blocks the caller.
+func (h *KVHandler) asyncReadRepair(key string, owners []cluster.Node, firstValue []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Collect all responses (including the first one we already have).
+	results := []replicaReadResult{{value: firstValue, found: true}}
+	for _, owner := range owners {
+		if owner.Status != cluster.Alive {
+			continue
+		}
+		resp, err := h.client.ReplicaGet(ctx, owner.Address, clusterRPC.ReplicaGetRequest{Key: key})
+		if err != nil || resp.Error != "" || !resp.Found {
+			continue
+		}
+		results = append(results, replicaReadResult{node: owner, value: resp.Value, found: true})
+	}
+
+	if len(results) < 2 {
+		return // Nothing to repair.
+	}
+
+	canonical := majorityValue(results)
+	if canonical == nil {
 		return
 	}
-	if resp.Error != "" {
-		h.writeStorageError(w, mapRemoteError(resp.Error))
-		return
+
+	// Update stale replicas asynchronously.
+	for _, r := range results {
+		if r.node.Address == "" {
+			continue // skip local pseudo-entry
+		}
+		if !bytes.Equal(r.value, canonical) {
+			// Fire-and-forget; ignore errors.
+			repairCtx, repairCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, _ = h.client.ReplicaPut(repairCtx, r.node.Address, clusterRPC.ReplicaPutRequest{Key: key, Value: canonical})
+			repairCancel()
+		}
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(resp.Value)
+}
+
+// majorityValue returns the value held by the majority of replicas.
+// If there is no strict majority, returns the first value encountered.
+func majorityValue(results []replicaReadResult) []byte {
+	counts := make(map[string]int)
+	var keys []string
+	for _, r := range results {
+		s := string(r.value)
+		if _, seen := counts[s]; !seen {
+			keys = append(keys, s)
+		}
+		counts[s]++
+	}
+	var majority string
+	var best int
+	for _, k := range keys {
+		if counts[k] > best {
+			best = counts[k]
+			majority = k
+		}
+	}
+	return []byte(majority)
 }
 
 func (h *KVHandler) handleDelete(w http.ResponseWriter, r *http.Request, key string) {
@@ -351,7 +486,6 @@ func (h *KVHandler) writeStorageError(w http.ResponseWriter, err error) {
 		WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "storage error"})
 	}
 }
-
 
 func extractKey(r *http.Request) (string, bool) {
 	if r == nil || r.URL == nil {

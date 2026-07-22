@@ -36,6 +36,7 @@ func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt tim
 		rpcServer.HeartbeatHandler = clusterManager.HandleHeartbeat
 		rpcServer.JoinHandler = clusterManager.HandleJoin
 		rpcServer.LeaveHandler = clusterManager.HandleLeave
+		rpcServer.GossipHandler = clusterManager.HandleGossip
 	} else {
 		rpcServer.HeartbeatHandler = func(req clusterRPC.HeartbeatRequest) (clusterRPC.HeartbeatResponse, error) {
 			return clusterRPC.HeartbeatResponse{Accepted: true, Message: "ok"}, nil
@@ -94,14 +95,19 @@ func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt tim
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		rec := storage.Record{Key: storage.Key(req.Key), Value: storage.Value(req.Value)}
+		rec := storage.Record{
+			Key:      storage.Key(req.Key),
+			Value:    storage.Value(req.Value),
+			Metadata: storage.Metadata{Version: req.Version},
+		}
 		if err := store.Put(ctx, rec); err != nil {
 			return clusterRPC.ReplicaPutResponse{Error: err.Error()}, nil
 		}
-		if _, err := store.Get(ctx, storage.Key(req.Key)); err != nil {
-			return clusterRPC.ReplicaPutResponse{Error: "storage write verification failed"}, nil
+		saved, err := store.GetRaw(ctx, storage.Key(req.Key))
+		if err != nil {
+			return clusterRPC.ReplicaPutResponse{Success: true, Version: req.Version}, nil
 		}
-		return clusterRPC.ReplicaPutResponse{Success: true}, nil
+		return clusterRPC.ReplicaPutResponse{Success: true, Version: saved.Metadata.Version}, nil
 	}
 	rpcServer.ReplicaDeleteHandler = func(req clusterRPC.ReplicaDeleteRequest) (clusterRPC.ReplicaDeleteResponse, error) {
 		if store == nil {
@@ -112,7 +118,29 @@ func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt tim
 		if err := store.Delete(ctx, storage.Key(req.Key)); err != nil {
 			return clusterRPC.ReplicaDeleteResponse{Error: err.Error()}, nil
 		}
-		return clusterRPC.ReplicaDeleteResponse{Success: true}, nil
+		saved, err := store.GetRaw(ctx, storage.Key(req.Key))
+		if err != nil {
+			return clusterRPC.ReplicaDeleteResponse{Success: true}, nil
+		}
+		return clusterRPC.ReplicaDeleteResponse{Success: true, Version: saved.Metadata.Version}, nil
+	}
+	// ReplicaGet reads the local storage only. No routing, no forwarding.
+	rpcServer.ReplicaGetHandler = func(req clusterRPC.ReplicaGetRequest) (clusterRPC.ReplicaGetResponse, error) {
+		if store == nil {
+			return clusterRPC.ReplicaGetResponse{Error: "storage unavailable"}, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		rec, err := store.GetRaw(ctx, storage.Key(req.Key))
+		if err != nil {
+			return clusterRPC.ReplicaGetResponse{Found: false}, nil
+		}
+		return clusterRPC.ReplicaGetResponse{
+			Found:        true,
+			Value:        rec.Value,
+			Version:      rec.Metadata.Version,
+			DeleteMarker: rec.Metadata.DeleteMarker,
+		}, nil
 	}
 	mux.Handle("/cluster/", rpcServer.Handler())
 

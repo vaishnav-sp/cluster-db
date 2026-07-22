@@ -21,6 +21,8 @@ func Defaults() Config {
 			HeartbeatInterval: 5 * time.Second,
 			FailureTimeout:    30 * time.Second,
 			DiscoveryPort:     9001,
+			GossipInterval:    1 * time.Second,
+			GossipFanout:      3,
 		},
 		Storage: StorageConfig{
 			Engine:           "memory",
@@ -39,6 +41,9 @@ func Defaults() Config {
 			CheckpointSize:     64 * 1024 * 1024,
 			WALMaxSegmentSize:  16 * 1024 * 1024,
 			WALMaxSegments:     4,
+			ReplicationFactor:  3,
+			WriteQuorum:        2,
+			ReadQuorum:         2,
 		},
 		Logging: LoggingConfig{
 			Level:            "info",

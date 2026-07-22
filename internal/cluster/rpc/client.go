@@ -128,4 +128,21 @@ func (c *Client) ReplicaDelete(ctx context.Context, address string, req ReplicaD
 	return resp, nil
 }
 
+// ReplicaGet reads a key directly from a replica node's local storage.
+// The remote handler performs no routing or forwarding.
+func (c *Client) ReplicaGet(ctx context.Context, address string, req ReplicaGetRequest) (ReplicaGetResponse, error) {
+	var resp ReplicaGetResponse
+	if err := c.doJSON(ctx, address, "/cluster/replica/get", req, &resp); err != nil {
+		return ReplicaGetResponse{}, err
+	}
+	return resp, nil
+}
 
+// Gossip sends a gossip membership exchange request to a cluster node.
+func (c *Client) Gossip(ctx context.Context, address string, req GossipRequest) (GossipResponse, error) {
+	var resp GossipResponse
+	if err := c.doJSON(ctx, address, "/cluster/gossip", req, &resp); err != nil {
+		return GossipResponse{}, err
+	}
+	return resp, nil
+}

@@ -33,6 +33,8 @@ type ClusterConfig struct {
 	HeartbeatInterval time.Duration `mapstructure:"heartbeat_interval"`
 	FailureTimeout    time.Duration `mapstructure:"failure_timeout"`
 	DiscoveryPort     int           `mapstructure:"discovery_port"`
+	GossipInterval    time.Duration `mapstructure:"gossip_interval"`
+	GossipFanout      int           `mapstructure:"gossip_fanout"`
 }
 
 // StorageConfig contains persistence related settings.
@@ -51,6 +53,9 @@ type StorageConfig struct {
 	CheckpointSize     int64         `mapstructure:"checkpoint_size"`
 	WALMaxSegmentSize  int64         `mapstructure:"wal_max_segment_size"`
 	WALMaxSegments     int           `mapstructure:"wal_max_segments"`
+	ReplicationFactor  int           `mapstructure:"replication_factor"`
+	WriteQuorum        int           `mapstructure:"write_quorum"`
+	ReadQuorum         int           `mapstructure:"read_quorum"`
 }
 
 // WALConfig controls write-ahead-log persistence for storage engines that

@@ -119,6 +119,30 @@ func (m *Manager) Get(ctx context.Context, key storage.Key) (storage.Record, err
 	return rec, nil
 }
 
+// GetRaw retrieves the raw record (including tombstone markers) for internal quorum operations.
+func (m *Manager) GetRaw(ctx context.Context, key storage.Key) (storage.Record, error) {
+	if err := m.checkOpen(); err != nil {
+		return storage.Record{}, err
+	}
+
+	if rawGetter, ok := m.engine.(interface {
+		GetRaw(ctx context.Context, key storage.Key) (storage.Record, error)
+	}); ok {
+		rec, err := rawGetter.GetRaw(ctx, key)
+		if err != nil {
+			return storage.Record{}, fmt.Errorf("storage manager: get raw: %w", err)
+		}
+		return rec, nil
+	}
+
+	rec, err := m.engine.Get(ctx, key)
+	if err != nil {
+		return storage.Record{}, fmt.Errorf("storage manager: get raw: %w", err)
+	}
+
+	return rec, nil
+}
+
 // Delete removes the record associated with key. Delete is idempotent.
 func (m *Manager) Delete(ctx context.Context, key storage.Key) error {
 	if err := m.checkOpen(); err != nil {

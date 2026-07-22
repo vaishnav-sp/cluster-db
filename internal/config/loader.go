@@ -58,6 +58,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("cluster.heartbeat_interval", 5*time.Second)
 	v.SetDefault("cluster.failure_timeout", 30*time.Second)
 	v.SetDefault("cluster.discovery_port", 9001)
+	v.SetDefault("cluster.gossip_interval", 1*time.Second)
+	v.SetDefault("cluster.gossip_fanout", 3)
 
 	v.SetDefault("storage.engine", "memory")
 	v.SetDefault("storage.data_directory", "./data")
@@ -73,6 +75,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("storage.checkpoint_size", int64(64*1024*1024))
 	v.SetDefault("storage.wal_max_segment_size", int64(16*1024*1024))
 	v.SetDefault("storage.wal_max_segments", 4)
+	v.SetDefault("storage.replication_factor", 3)
+	v.SetDefault("storage.write_quorum", 2)
+	v.SetDefault("storage.read_quorum", 2)
 
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.encoding", "json")

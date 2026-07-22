@@ -163,14 +163,21 @@ func (e *Engine) Put(_ context.Context, rec storage.Record) error {
 	k := string(rec.Key)
 	now := time.Now()
 
-	// Preserve CreatedAt if the record already exists.
+	// Preserve CreatedAt and handle Version auto-incrementing if version is not explicitly set.
 	if existing, ok := e.store[k]; ok {
 		rec.Metadata.CreatedAt = existing.Metadata.CreatedAt
+		if rec.Metadata.Version == 0 {
+			rec.Metadata.Version = existing.Metadata.Version + 1
+		}
 	} else {
 		rec.Metadata.CreatedAt = now
+		if rec.Metadata.Version == 0 {
+			rec.Metadata.Version = 1
+		}
 	}
 
 	rec.Metadata.UpdatedAt = now
+	rec.Metadata.DeleteMarker = false
 
 	if err := e.appendWALLocked(wal.OperationPut, rec.Key, rec.Value, now); err != nil {
 		return err
@@ -189,8 +196,29 @@ func (e *Engine) Put(_ context.Context, rec storage.Record) error {
 }
 
 // Get retrieves the record associated with key.
-// Returns storage.ErrKeyNotFound if the key is absent.
+// Returns storage.ErrKeyNotFound if the key is absent or marked as deleted.
 func (e *Engine) Get(_ context.Context, key storage.Key) (storage.Record, error) {
+	if err := validateKey(key); err != nil {
+		return storage.Record{}, err
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if err := e.checkOpen(); err != nil {
+		return storage.Record{}, err
+	}
+
+	rec, ok := e.store[string(key)]
+	if !ok || rec.Metadata.DeleteMarker {
+		return storage.Record{}, storage.ErrKeyNotFound
+	}
+
+	return rec, nil
+}
+
+// GetRaw retrieves the raw record (including tombstone markers) for internal quorum and LWW operations.
+func (e *Engine) GetRaw(_ context.Context, key storage.Key) (storage.Record, error) {
 	if err := validateKey(key); err != nil {
 		return storage.Record{}, err
 	}
@@ -210,8 +238,8 @@ func (e *Engine) Get(_ context.Context, key storage.Key) (storage.Record, error)
 	return rec, nil
 }
 
-// Delete removes the record associated with key.
-// Delete is idempotent: deleting a non-existent key returns nil.
+// Delete removes the record associated with key by storing a tombstone record with an advanced version.
+// Delete is idempotent.
 func (e *Engine) Delete(_ context.Context, key storage.Key) error {
 	if err := validateKey(key); err != nil {
 		return err
@@ -224,11 +252,36 @@ func (e *Engine) Delete(_ context.Context, key storage.Key) error {
 		return err
 	}
 
-	if err := e.appendWALLocked(wal.OperationDelete, key, nil, time.Now()); err != nil {
+	now := time.Now()
+	if err := e.appendWALLocked(wal.OperationDelete, key, nil, now); err != nil {
 		return err
 	}
 
-	delete(e.store, string(key))
+	k := string(key)
+	if existing, ok := e.store[k]; ok {
+		e.store[k] = storage.Record{
+			Key:   copyBytes(key),
+			Value: []byte{},
+			Metadata: storage.Metadata{
+				CreatedAt:    existing.Metadata.CreatedAt,
+				UpdatedAt:    now,
+				Version:      existing.Metadata.Version + 1,
+				DeleteMarker: true,
+			},
+		}
+	} else {
+		e.store[k] = storage.Record{
+			Key:   copyBytes(key),
+			Value: []byte{},
+			Metadata: storage.Metadata{
+				CreatedAt:    now,
+				UpdatedAt:    now,
+				Version:      1,
+				DeleteMarker: true,
+			},
+		}
+	}
+
 	if err := e.maybeCheckpointLocked(false); err != nil {
 		return err
 	}
@@ -250,9 +303,12 @@ func (e *Engine) Exists(_ context.Context, key storage.Key) (bool, error) {
 		return false, err
 	}
 
-	_, ok := e.store[string(key)]
+	rec, ok := e.store[string(key)]
+	if !ok || rec.Metadata.DeleteMarker {
+		return false, nil
+	}
 
-	return ok, nil
+	return true, nil
 }
 
 // Scan returns an iterator over records matching opts.
@@ -634,7 +690,10 @@ func (e *Engine) collectRecords(opts storage.ScanOptions) []storage.Record {
 	// Collect all matching keys first so we can sort them.
 	keys := make([]string, 0, len(e.store))
 
-	for k := range e.store {
+	for k, rec := range e.store {
+		if rec.Metadata.DeleteMarker {
+			continue
+		}
 		kb := []byte(k)
 
 		if len(opts.Prefix) > 0 && !bytes.HasPrefix(kb, opts.Prefix) {

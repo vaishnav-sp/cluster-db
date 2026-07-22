@@ -97,25 +97,65 @@ type KVDeleteResponse struct {
 
 // ReplicaPutRequest represents a request to write a replicated key on a replica.
 type ReplicaPutRequest struct {
-	Key   string `json:"key"`
-	Value []byte `json:"value"`
+	Key     string `json:"key"`
+	Value   []byte `json:"value"`
+	Version uint64 `json:"version,omitempty"`
 }
 
 // ReplicaPutResponse represents the response to a replicated key write request.
 type ReplicaPutResponse struct {
 	Success bool   `json:"success"`
+	Version uint64 `json:"version,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
 // ReplicaDeleteRequest represents a request to delete a replicated key on a replica.
 type ReplicaDeleteRequest struct {
-	Key string `json:"key"`
+	Key     string `json:"key"`
+	Version uint64 `json:"version,omitempty"`
 }
 
 // ReplicaDeleteResponse represents the response to a replicated key delete request.
 type ReplicaDeleteResponse struct {
 	Success bool   `json:"success"`
+	Version uint64 `json:"version,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
+// ReplicaGetRequest represents a request to read a key directly from local storage on a replica.
+// No routing or forwarding is performed; the handler reads its own store only.
+type ReplicaGetRequest struct {
+	Key string `json:"key"`
+}
 
+// ReplicaGetResponse represents the response to a replica read request.
+type ReplicaGetResponse struct {
+	Found        bool   `json:"found"`
+	Value        []byte `json:"value,omitempty"`
+	Version      uint64 `json:"version,omitempty"`
+	DeleteMarker bool   `json:"delete_marker,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// GossipNodeInfo describes a node's membership state in a gossip payload.
+type GossipNodeInfo struct {
+	ID            string    `json:"id"`
+	Address       string    `json:"address"`
+	Status        string    `json:"status"`
+	Version       string    `json:"version"`
+	LastHeartbeat time.Time `json:"last_heartbeat"`
+}
+
+// GossipRequest represents a gossip state exchange request.
+type GossipRequest struct {
+	SenderID   string           `json:"sender_id"`
+	SenderAddr string           `json:"sender_addr"`
+	Nodes      []GossipNodeInfo `json:"nodes"`
+}
+
+// GossipResponse represents the response to a gossip state exchange request.
+type GossipResponse struct {
+	Accepted bool             `json:"accepted"`
+	Message  string           `json:"message,omitempty"`
+	Nodes    []GossipNodeInfo `json:"nodes,omitempty"`
+}

@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vaishnav-sp/cluster-db/internal/cluster/consistency"
 	clusterhashring "github.com/vaishnav-sp/cluster-db/internal/cluster/hashring"
 	clusterRPC "github.com/vaishnav-sp/cluster-db/internal/cluster/rpc"
 )
@@ -24,10 +25,15 @@ type Manager struct {
 	localNodeID       string
 	localAddress      string
 	started           bool
-	hashRing          *clusterhashring.HashRing
-	ReplicationFactor int
-}
 
+	ReplicationFactor int
+	WriteQuorum       int
+	ReadQuorum        int
+
+	Metrics   *consistency.Metrics
+	hashRing  *clusterhashring.HashRing
+	gossipEngine any // *gossip.Engine, kept interface/any or type to avoid circular dependency
+}
 // NewManager creates a cluster manager with the provided membership state.
 func NewManager(membership *Membership, logger *zap.Logger, heartbeatInterval, failureTimeout time.Duration, nodeID, nodeAddress string) *Manager {
 	if membership == nil {
@@ -43,6 +49,7 @@ func NewManager(membership *Membership, logger *zap.Logger, heartbeatInterval, f
 		stopCh:         make(chan struct{}),
 		stoppedCh:      make(chan struct{}),
 		hashRing:       clusterhashring.New(100),
+		Metrics:        consistency.NewMetrics(),
 	}
 	if membership != nil {
 		membership.setChangeHook(func() { manager.syncHashRing() })
@@ -81,6 +88,13 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.electLeader()
 
 	go m.monitorLoop(ctx)
+	m.mu.RLock()
+	ge, _ := m.gossipEngine.(GossipHandler)
+	m.mu.RUnlock()
+	if ge != nil {
+		_ = ge.Start(ctx)
+	}
+
 	if m.logger != nil {
 		m.logger.Info("cluster monitor started",
 			zap.String("node_id", m.localNodeID),
@@ -102,13 +116,44 @@ func (m *Manager) Stop() {
 	m.started = false
 	stopCh := m.stopCh
 	stoppedCh := m.stoppedCh
+	ge, _ := m.gossipEngine.(GossipHandler)
 	m.mu.Unlock()
+
+	if ge != nil {
+		ge.Stop()
+	}
 
 	<-stoppedCh
 	if m.logger != nil {
 		m.logger.Info("cluster monitor stopped", zap.String("node_id", m.localNodeID))
 	}
 	_ = stopCh
+}
+
+// GossipHandler abstracts the Gossip engine operations.
+type GossipHandler interface {
+	Start(ctx context.Context) error
+	Stop()
+	HandleInboundGossip(req clusterRPC.GossipRequest) clusterRPC.GossipResponse
+}
+
+// SetGossipEngine registers a gossip engine with the manager.
+func (m *Manager) SetGossipEngine(engine GossipHandler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gossipEngine = engine
+}
+
+// HandleGossip handles an incoming gossip request.
+func (m *Manager) HandleGossip(req clusterRPC.GossipRequest) (clusterRPC.GossipResponse, error) {
+	m.mu.RLock()
+	ge, ok := m.gossipEngine.(GossipHandler)
+	m.mu.RUnlock()
+
+	if ok && ge != nil {
+		return ge.HandleInboundGossip(req), nil
+	}
+	return clusterRPC.GossipResponse{Accepted: true, Message: "ok"}, nil
 }
 
 func (m *Manager) monitorLoop(ctx context.Context) {
@@ -376,4 +421,10 @@ func (m *Manager) syncHashRing() {
 	m.mu.Lock()
 	m.hashRing = ring
 	m.mu.Unlock()
+}
+
+// IsLocalNode reports whether the given node ID matches the local node.
+// Use this helper to avoid duplicating owner-vs-local comparisons at call sites.
+func (m *Manager) IsLocalNode(nodeID string) bool {
+	return m.localNodeID != "" && m.localNodeID == nodeID
 }

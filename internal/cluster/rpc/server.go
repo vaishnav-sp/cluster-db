@@ -20,6 +20,9 @@ type Server struct {
 	KVDeleteHandler  func(KVDeleteRequest) (KVDeleteResponse, error)
 	ReplicaPutHandler    func(ReplicaPutRequest) (ReplicaPutResponse, error)
 	ReplicaDeleteHandler func(ReplicaDeleteRequest) (ReplicaDeleteResponse, error)
+	// ReplicaGetHandler handles local-only replica reads (no routing, no forwarding).
+	ReplicaGetHandler func(ReplicaGetRequest) (ReplicaGetResponse, error)
+	GossipHandler     func(GossipRequest) (GossipResponse, error)
 }
 
 // NewServer creates a new RPC server with no-op handlers by default.
@@ -39,6 +42,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/cluster/kv/delete", s.handleKVDelete)
 	mux.HandleFunc("/cluster/replica/put", s.handleReplicaPut)
 	mux.HandleFunc("/cluster/replica/delete", s.handleReplicaDelete)
+	mux.HandleFunc("/cluster/replica/get", s.handleReplicaGet)
+	mux.HandleFunc("/cluster/gossip", s.handleGossip)
 	return mux
 }
 
@@ -296,6 +301,55 @@ func (s *Server) handleReplicaDelete(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.ReplicaDeleteHandler(req)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, ReplicaDeleteResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleReplicaGet serves local-only key reads. It does not route or forward the request.
+func (s *Server) handleReplicaGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, ReplicaGetResponse{Error: "method not allowed"})
+		return
+	}
+	var req ReplicaGetRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ReplicaGetResponse{Error: err.Error()})
+		return
+	}
+	if req.Key == "" {
+		writeJSON(w, http.StatusBadRequest, ReplicaGetResponse{Error: "key is required"})
+		return
+	}
+	if s.ReplicaGetHandler == nil {
+		writeJSON(w, http.StatusNotImplemented, ReplicaGetResponse{Error: "handler not implemented"})
+		return
+	}
+	resp, err := s.ReplicaGetHandler(req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ReplicaGetResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleGossip(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, GossipResponse{Message: "method not allowed"})
+		return
+	}
+	var req GossipRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, GossipResponse{Message: err.Error()})
+		return
+	}
+	if s.GossipHandler == nil {
+		writeJSON(w, http.StatusOK, GossipResponse{Accepted: true, Message: "ok"})
+		return
+	}
+	resp, err := s.GossipHandler(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, GossipResponse{Message: err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
