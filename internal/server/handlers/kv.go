@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vaishnav-sp/cluster-db/internal/cluster"
+	"github.com/vaishnav-sp/cluster-db/internal/cluster/handoff"
 	clusterRPC "github.com/vaishnav-sp/cluster-db/internal/cluster/rpc"
 	"github.com/vaishnav-sp/cluster-db/internal/storage"
 	storageManager "github.com/vaishnav-sp/cluster-db/internal/storage/manager"
@@ -21,15 +22,25 @@ type KVHandler struct {
 	manager        *storageManager.Manager
 	clusterManager *cluster.Manager
 	client         *clusterRPC.Client
+	hintManager    *handoff.Manager
 }
 
 // NewKVHandler creates a new KV handler with the storage manager dependency.
-func NewKVHandler(manager *storageManager.Manager, clusterManager *cluster.Manager) *KVHandler {
+func NewKVHandler(manager *storageManager.Manager, clusterManager *cluster.Manager, hintManager *handoff.Manager) *KVHandler {
+	if hintManager == nil {
+		hintManager = handoff.NewManager()
+	}
 	return &KVHandler{
 		manager:        manager,
 		clusterManager: clusterManager,
 		client:         clusterRPC.NewClient(5 * time.Second),
+		hintManager:    hintManager,
 	}
+}
+
+// HintManager returns the handoff manager used by this handler.
+func (h *KVHandler) HintManager() *handoff.Manager {
+	return h.hintManager
 }
 
 // ServeHTTP routes KV requests.
@@ -127,18 +138,20 @@ func (h *KVHandler) handlePut(w http.ResponseWriter, r *http.Request, key string
 
 	for _, replica := range replicas {
 		if replica.Status != cluster.Alive {
-			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": fmt.Sprintf("replica node %s is unavailable (status: %v)", replica.ID, replica.Status)})
-			return
+			// Replica unreachable: store a hint and continue.
+			h.hintManager.StoreHint(replica.ID, handoff.OperationPut, key, body)
+			continue
 		}
 
 		resp, err := h.client.ReplicaPut(r.Context(), replica.Address, clusterRPC.ReplicaPutRequest{Key: key, Value: body})
 		if err != nil {
-			h.writeGatewayError(w, err)
-			return
+			// RPC failed: store a hint so the write can be replayed later.
+			h.hintManager.StoreHint(replica.ID, handoff.OperationPut, key, body)
+			continue
 		}
 		if resp.Error != "" {
-			h.writeStorageError(w, mapRemoteError(resp.Error))
-			return
+			h.hintManager.StoreHint(replica.ID, handoff.OperationPut, key, body)
+			continue
 		}
 	}
 
@@ -372,18 +385,20 @@ func (h *KVHandler) handleDelete(w http.ResponseWriter, r *http.Request, key str
 
 	for _, replica := range replicas {
 		if replica.Status != cluster.Alive {
-			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": fmt.Sprintf("replica node %s is unavailable (status: %v)", replica.ID, replica.Status)})
-			return
+			// Replica unreachable: store a hint and continue.
+			h.hintManager.StoreHint(replica.ID, handoff.OperationDelete, key, nil)
+			continue
 		}
 
 		resp, err := h.client.ReplicaDelete(r.Context(), replica.Address, clusterRPC.ReplicaDeleteRequest{Key: key})
 		if err != nil {
-			h.writeGatewayError(w, err)
-			return
+			// RPC failed: store a hint so the delete can be replayed later.
+			h.hintManager.StoreHint(replica.ID, handoff.OperationDelete, key, nil)
+			continue
 		}
 		if resp.Error != "" {
-			h.writeStorageError(w, mapRemoteError(resp.Error))
-			return
+			h.hintManager.StoreHint(replica.ID, handoff.OperationDelete, key, nil)
+			continue
 		}
 	}
 

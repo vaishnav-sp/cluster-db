@@ -10,8 +10,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vaishnav-sp/cluster-db/internal/cluster"
+	"github.com/vaishnav-sp/cluster-db/internal/cluster/handoff"
 	clusterRPC "github.com/vaishnav-sp/cluster-db/internal/cluster/rpc"
 	"github.com/vaishnav-sp/cluster-db/internal/config"
+	docservice "github.com/vaishnav-sp/cluster-db/internal/document/service"
 	"github.com/vaishnav-sp/cluster-db/internal/server/handlers"
 	"github.com/vaishnav-sp/cluster-db/internal/server/middleware"
 	"github.com/vaishnav-sp/cluster-db/internal/storage"
@@ -19,7 +21,7 @@ import (
 )
 
 // New creates and initializes a new HTTP Server.
-func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt time.Time, store *manager.Manager, clusterManager *cluster.Manager) (*Server, error) {
+func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt time.Time, store *manager.Manager, clusterManager *cluster.Manager, hintManager *handoff.Manager) (*Server, error) {
 	address := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 
 	mux := http.NewServeMux()
@@ -28,8 +30,13 @@ func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt tim
 	mux.Handle("/live", healthHandler)
 	mux.Handle("/ready", healthHandler)
 
-	kvHandler := handlers.NewKVHandler(store, clusterManager)
+	kvHandler := handlers.NewKVHandler(store, clusterManager, hintManager)
 	mux.Handle("/v1/kv/", kvHandler)
+
+	documentService := docservice.New(store)
+	documentHandler := handlers.NewDocumentHandler(documentService)
+	mux.Handle("/v1/documents", documentHandler)
+	mux.Handle("/v1/documents/", documentHandler)
 
 	rpcServer := clusterRPC.NewServer()
 	if clusterManager != nil {

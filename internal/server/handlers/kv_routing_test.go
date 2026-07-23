@@ -116,8 +116,7 @@ func setupRoutingTest(t *testing.T) (*KVHandler, *manager.Manager, *cluster.Mana
 	}
 
 	// 5. Create local KVHandler
-	localHandler := NewKVHandler(localStore, localManager)
-
+	localHandler := NewKVHandler(localStore, localManager, nil)
 	t.Cleanup(func() {
 		localManager.Stop()
 		localStore.Close(context.Background())
@@ -284,7 +283,7 @@ func TestKVHandlers_OwnerUnavailable(t *testing.T) {
 		}
 		localManager.Membership().RemoveNode("node-local") // remove the node so ring is empty!
 
-		handler := NewKVHandler(localStore, localManager)
+		handler := NewKVHandler(localStore, localManager, nil)
 		reqGet := httptest.NewRequest(http.MethodGet, "/v1/kv/anykey", nil)
 		wGet := httptest.NewRecorder()
 		handler.ServeHTTP(wGet, reqGet)

@@ -136,8 +136,7 @@ func setupReplicationCluster(t *testing.T, replicationFactor int, nodes ...*repl
 		t.Fatalf("start manager: %v", err)
 	}
 
-	handler := NewKVHandler(nodes[0].store, localManager)
-
+	handler := NewKVHandler(nodes[0].store, localManager, nil)
 	t.Cleanup(func() { localManager.Stop() })
 
 	return handler, localManager
@@ -387,12 +386,27 @@ func TestReplication_ReplicaFailure(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	// Must NOT return 201; must return a gateway error.
-	if w.Code == http.StatusCreated {
-		t.Fatal("expected error when replica is down, got 201 Created")
-	}
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 Bad Gateway, got %d body=%s", w.Code, w.Body.String())
-	}
+	if w.Code != http.StatusCreated {
+    t.Fatalf("expected 201 Created with hinted handoff, got %d body=%s",
+        w.Code,
+        w.Body.String(),
+    )
+}
+
+// Primary should still contain the key.
+if !n0.hasKey(t, key) {
+    t.Fatal("primary should contain the key")
+}
+
+// Replica is down, so it won't have the key yet.
+if n1.hasKey(t, key) {
+    t.Fatal("replica should not have the key while offline")
+}
+
+// Optional: verify that a hint was stored.
+if len(handler.HintManager().PendingHints("node-1")) == 0 {
+    t.Fatal("expected hinted handoff entry to be stored")
+}
 }
 
 // TestReplication_PrimaryFailure verifies that when the primary is unreachable
@@ -433,7 +447,7 @@ func TestReplication_PrimaryFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { n1Manager.Stop() })
 
-	handler := NewKVHandler(n1.store, n1Manager)
+	handler := NewKVHandler(n1.store, n1Manager, nil)
 
 	// Close n0 RPC server — primary is now unreachable.
 	n0.rpcSrv.Close()

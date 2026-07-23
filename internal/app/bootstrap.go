@@ -6,6 +6,7 @@ import (
 
 	"github.com/vaishnav-sp/cluster-db/internal/cluster"
 	"github.com/vaishnav-sp/cluster-db/internal/cluster/gossip"
+	"github.com/vaishnav-sp/cluster-db/internal/cluster/handoff"
 	clusterRPC "github.com/vaishnav-sp/cluster-db/internal/cluster/rpc"
 	"github.com/vaishnav-sp/cluster-db/internal/config"
 	"github.com/vaishnav-sp/cluster-db/internal/logger"
@@ -58,6 +59,7 @@ if r <= 0 {
 clusterManager.ReplicationFactor = rf
 clusterManager.WriteQuorum = w
 clusterManager.ReadQuorum = r
+	hintManager := handoff.NewManager()
 	gossipEngine := gossip.NewEngine(gossip.Config{
 		LocalNodeID:    cfg.Cluster.NodeID,
 		LocalAddress:   cfg.Cluster.NodeAddress,
@@ -67,10 +69,11 @@ clusterManager.ReadQuorum = r
 		Interval:       cfg.Cluster.GossipInterval,
 		Fanout:         cfg.Cluster.GossipFanout,
 		FailureTimeout: cfg.Cluster.FailureTimeout,
+		HintManager:    hintManager,
 	})
 	clusterManager.SetGossipEngine(gossipEngine)
 
-	httpServer, err := server.New(cfg.Server, log, version, startedAt, storageManager, clusterManager)
+	httpServer, err := server.New(cfg.Server, log, version, startedAt, storageManager, clusterManager, hintManager)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrServerInitialization, err)
 	}

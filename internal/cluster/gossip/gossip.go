@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vaishnav-sp/cluster-db/internal/cluster"
+	"github.com/vaishnav-sp/cluster-db/internal/cluster/handoff"
 	clusterRPC "github.com/vaishnav-sp/cluster-db/internal/cluster/rpc"
 )
 
@@ -28,6 +29,7 @@ type Engine struct {
 	stopCh         chan struct{}
 	stoppedCh      chan struct{}
 	started        bool
+	hintManager    *handoff.Manager
 }
 
 // Config holds configuration parameters for the gossip engine.
@@ -40,6 +42,7 @@ type Config struct {
 	Interval       time.Duration
 	Fanout         int
 	FailureTimeout time.Duration
+	HintManager    *handoff.Manager
 }
 
 // NewEngine constructs a new gossip Engine.
@@ -67,6 +70,7 @@ func NewEngine(cfg Config) *Engine {
 		fanout:         cfg.Fanout,
 		failureTimeout: cfg.FailureTimeout,
 		selector:       NewPeerSelector(),
+		hintManager:    cfg.HintManager,
 	}
 }
 
@@ -221,6 +225,9 @@ func (e *Engine) MergeMembership(remoteNodes []GossipNodeState) {
 				zap.String("node_id", remote.NodeID),
 				zap.String("status", remote.Status.String()),
 			)
+			if remote.Status == cluster.Alive {
+				e.replayHintsForNode(remote.NodeID, remote.Address)
+			}
 			continue
 		}
 
@@ -239,6 +246,9 @@ func (e *Engine) MergeMembership(remoteNodes []GossipNodeState) {
 						zap.String("node_id", updatedNode.ID),
 						zap.String("previous_status", existing.Status.String()),
 					)
+				} else if updatedNode.Status == cluster.Alive && existing.Status != cluster.Alive {
+					// Node recovered: replay any pending hints.
+					e.replayHintsForNode(updatedNode.ID, updatedNode.Address)
 				}
 			}
 
@@ -250,6 +260,32 @@ func (e *Engine) MergeMembership(remoteNodes []GossipNodeState) {
 			)
 		}
 	}
+}
+
+// replayHintsForNode triggers asynchronous hint replay for the given node.
+func (e *Engine) replayHintsForNode(nodeID, address string) {
+	if e.hintManager == nil || address == "" {
+		return
+	}
+	client := e.client
+	if client == nil {
+		return
+	}
+	hm := e.hintManager
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		hm.ReplayHints(ctx, nodeID, address,
+			func(ctx context.Context, addr, key string, value []byte) error {
+				_, err := client.ReplicaPut(ctx, addr, clusterRPC.ReplicaPutRequest{Key: key, Value: value})
+				return err
+			},
+			func(ctx context.Context, addr, key string) error {
+				_, err := client.ReplicaDelete(ctx, addr, clusterRPC.ReplicaDeleteRequest{Key: key})
+				return err
+			},
+		)
+	}()
 }
 
 func (e *Engine) evaluateFailureDetector() {
