@@ -181,6 +181,289 @@ func TestDocumentHandlerGetExistingDocument(t *testing.T) {
 	}
 }
 
+func TestDocumentHandlerQuerySingleDocument(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+	id := createDocumentViaHandler(t, handler, `{"name":"Alice","city":"Chennai"}`)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Chennai", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var docs []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &docs); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	if len(docs) != 1 || docs[0]["_id"] != id || docs[0]["name"] != "Alice" {
+		t.Fatalf("query response = %#v, want document %q", docs, id)
+	}
+}
+
+func TestDocumentHandlerQueryMultipleDocuments(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+	firstID := createDocumentViaHandler(t, handler, `{"name":"Alice","city":"Chennai"}`)
+	secondID := createDocumentViaHandler(t, handler, `{"name":"Bob","city":"Chennai"}`)
+	createDocumentViaHandler(t, handler, `{"name":"Carol","city":"Bengaluru"}`)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Chennai", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var docs []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &docs); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("query returned %d documents, want 2", len(docs))
+	}
+	gotIDs := map[string]bool{docs[0]["_id"].(string): true, docs[1]["_id"].(string): true}
+	if !gotIDs[firstID] || !gotIDs[secondID] {
+		t.Fatalf("query IDs = %v, want %q and %q", gotIDs, firstID, secondID)
+	}
+}
+
+func TestDocumentHandlerQueryNoResultsReturnsEmptyArray(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+	createDocumentViaHandler(t, handler, `{"city":"Chennai"}`)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Delhi", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if strings.TrimSpace(rr.Body.String()) != "[]" {
+		t.Fatalf("body = %q, want []", rr.Body.String())
+	}
+}
+
+func TestDocumentHandlerQueryPagination(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+	firstID := createDocumentViaHandler(t, handler, `{"city":"Chennai","name":"first"}`)
+	secondID := createDocumentViaHandler(t, handler, `{"city":"Chennai","name":"second"}`)
+	thirdID := createDocumentViaHandler(t, handler, `{"city":"Chennai","name":"third"}`)
+
+	tests := []struct {
+		name    string
+		query   string
+		wantIDs []string
+	}{
+		{name: "limit", query: "limit=2", wantIDs: []string{firstID, secondID}},
+		{name: "offset", query: "offset=1", wantIDs: []string{secondID, thirdID}},
+		{name: "limit and offset", query: "limit=1&offset=1", wantIDs: []string{secondID}},
+		{name: "limit larger than dataset", query: "limit=10", wantIDs: []string{firstID, secondID, thirdID}},
+		{name: "offset beyond dataset", query: "limit=2&offset=10", wantIDs: []string{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Chennai&"+tc.query, nil)
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			var docs []map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &docs); err != nil {
+				t.Fatalf("decode query response: %v", err)
+			}
+			if len(docs) != len(tc.wantIDs) {
+				t.Fatalf("query returned %d documents, want %d", len(docs), len(tc.wantIDs))
+			}
+			for i, wantID := range tc.wantIDs {
+				if docs[i]["_id"] != wantID {
+					t.Fatalf("document %d ID = %v, want %q", i, docs[i]["_id"], wantID)
+				}
+			}
+		})
+	}
+}
+
+func TestDocumentHandlerQuerySortingBeforePagination(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+	createDocumentViaHandler(t, handler, `{"city":"Chennai","age":30}`)
+	createDocumentViaHandler(t, handler, `{"city":"Chennai","age":10}`)
+	thirdID := createDocumentViaHandler(t, handler, `{"city":"Chennai","age":20}`)
+
+	tests := []struct {
+		name   string
+		query  string
+		wantID string
+	}{
+		{name: "ascending", query: "sort=age&limit=1&offset=1", wantID: thirdID},
+		{name: "descending", query: "sort=-age&limit=1&offset=1", wantID: thirdID},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Chennai&"+tc.query, nil)
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			var docs []map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &docs); err != nil {
+				t.Fatalf("decode query response: %v", err)
+			}
+			if len(docs) != 1 || docs[0]["_id"] != tc.wantID {
+				t.Fatalf("query response = %#v, want document %q", docs, tc.wantID)
+			}
+		})
+	}
+
+}
+
+func TestDocumentHandlerQueryAggregation(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+	createDocumentViaHandler(t, handler, `{"city":"Chennai","age":10}`)
+	createDocumentViaHandler(t, handler, `{"city":"Chennai","age":20}`)
+	createDocumentViaHandler(t, handler, `{"city":"Chennai","age":"not numeric"}`)
+	createDocumentViaHandler(t, handler, `{"city":"Bengaluru","age":100}`)
+
+	normalRequest := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Chennai", nil)
+	normalRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(normalRecorder, normalRequest)
+	if normalRecorder.Code != http.StatusOK {
+		t.Fatalf("normal query status = %d, want %d, body = %q", normalRecorder.Code, http.StatusOK, normalRecorder.Body.String())
+	}
+	var normalDocs []map[string]any
+	if err := json.Unmarshal(normalRecorder.Body.Bytes(), &normalDocs); err != nil {
+		t.Fatalf("decode normal query response: %v", err)
+	}
+	if len(normalDocs) != 3 {
+		t.Fatalf("normal query returned %d documents, want 3", len(normalDocs))
+	}
+
+	tests := []struct {
+		name      string
+		aggregate string
+		field     string
+		want      float64
+	}{
+		{name: "count after filtering", aggregate: "count", field: "count", want: 3},
+		{name: "sum", aggregate: "sum:age", field: "sum", want: 30},
+		{name: "average", aggregate: "avg:age", field: "average", want: 15},
+		{name: "minimum", aggregate: "min:age", field: "minimum", want: 10},
+		{name: "maximum", aggregate: "max:age", field: "maximum", want: 20},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Chennai&aggregate="+tc.aggregate, nil)
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusOK, rr.Body.String())
+			}
+			var result map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+				t.Fatalf("decode aggregate response: %v", err)
+			}
+			if result[tc.field] != tc.want {
+				t.Fatalf("aggregate response = %v, want %s=%v", result, tc.field, tc.want)
+			}
+		})
+	}
+}
+
+func TestDocumentHandlerAggregationIgnoresPaginationAndHandlesEmptyValues(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+	createDocumentViaHandler(t, handler, `{"city":"Chennai","age":10}`)
+	createDocumentViaHandler(t, handler, `{"city":"Chennai","age":20}`)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Chennai&aggregate=count&limit=1&offset=1", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var countResult map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &countResult); err != nil {
+		t.Fatalf("decode count response: %v", err)
+	}
+	if countResult["count"] != float64(2) {
+		t.Fatalf("count response = %v, want 2 despite pagination", countResult)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Unknown&aggregate=sum:age", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("empty status = %d, want %d, body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var emptyResult map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &emptyResult); err != nil {
+		t.Fatalf("decode empty aggregate response: %v", err)
+	}
+	if emptyResult["field"] != "age" || emptyResult["value"] != nil {
+		t.Fatalf("empty aggregate response = %v, want age=null", emptyResult)
+	}
+}
+
+func TestDocumentHandlerQueryRejectsInvalidPagination(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+
+	tests := []struct {
+		name      string
+		query     string
+		wantError string
+	}{
+		{name: "negative limit", query: "limit=-1", wantError: "invalid limit parameter"},
+		{name: "non-integer limit", query: "limit=abc", wantError: "invalid limit parameter"},
+		{name: "negative offset", query: "offset=-1", wantError: "invalid offset parameter"},
+		{name: "non-integer offset", query: "offset=abc", wantError: "invalid offset parameter"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/documents?field=city&value=Chennai&"+tc.query, nil)
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+			}
+			assertErrorJSON(t, rr.Body.String(), tc.wantError)
+		})
+	}
+}
+
+func TestDocumentHandlerQueryValidatesParameters(t *testing.T) {
+	handler, _ := setupDocumentHandlerTest(t)
+
+	tests := []struct {
+		name      string
+		path      string
+		wantError string
+	}{
+		{name: "missing value", path: "/v1/documents?field=city", wantError: "missing value parameter"},
+		{name: "missing field", path: "/v1/documents?value=Chennai", wantError: "missing field parameter"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+			}
+			assertErrorJSON(t, rr.Body.String(), tc.wantError)
+		})
+	}
+}
+
 func TestDocumentHandlerGetMissingDocument(t *testing.T) {
 	handler, _ := setupDocumentHandlerTest(t)
 

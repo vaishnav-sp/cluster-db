@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/vaishnav-sp/cluster-db/internal/document"
@@ -36,6 +37,10 @@ func (h *DocumentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if collection {
+		if r.Method == http.MethodGet {
+			h.handleFind(w, r)
+			return
+		}
 		if r.Method != http.MethodPost {
 			WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
@@ -89,6 +94,90 @@ func (h *DocumentHandler) handleGet(w http.ResponseWriter, r *http.Request, id s
 	}
 
 	WriteJSON(w, http.StatusOK, doc)
+}
+
+func (h *DocumentHandler) handleFind(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	_, hasField := query["field"]
+	_, hasValue := query["value"]
+
+	switch {
+	case hasField && !hasValue:
+		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "missing value parameter"})
+		return
+	case hasValue && !hasField:
+		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "missing field parameter"})
+		return
+	case !hasField && !hasValue:
+		WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	if _, hasAggregate := query["aggregate"]; hasAggregate {
+		aggregate := query.Get("aggregate")
+		if !isSupportedAggregate(aggregate) {
+			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid aggregate parameter"})
+			return
+		}
+
+		docs, err := h.service.FindByField(r.Context(), query.Get("field"), query.Get("value"), -1, 0, query.Get("sort"))
+		if err != nil {
+			h.writeDocumentStorageError(w, err)
+			return
+		}
+		result, err := h.service.AggregateDocuments(docs, aggregate)
+		if err != nil {
+			h.writeDocumentStorageError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
+		return
+	}
+
+	limit := -1
+	var err error
+	if rawLimit, ok := query["limit"]; ok {
+		limit, err = strconv.Atoi(rawLimit[0])
+		if err != nil || limit < 0 {
+			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit parameter"})
+			return
+		}
+	}
+
+	offset := 0
+	if rawOffset, ok := query["offset"]; ok {
+		offset, err = strconv.Atoi(rawOffset[0])
+		if err != nil || offset < 0 {
+			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid offset parameter"})
+			return
+		}
+	}
+
+	docs, err := h.service.FindByField(r.Context(), query.Get("field"), query.Get("value"), limit, offset, query.Get("sort"))
+	if err != nil {
+		h.writeDocumentStorageError(w, err)
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, docs)
+}
+
+func isSupportedAggregate(aggregate string) bool {
+	if aggregate == "count" {
+		return true
+	}
+
+	parts := strings.SplitN(aggregate, ":", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return false
+	}
+
+	switch parts[0] {
+	case "sum", "avg", "min", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *DocumentHandler) handleDelete(w http.ResponseWriter, r *http.Request, id string) {
