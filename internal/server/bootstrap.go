@@ -34,7 +34,7 @@ func New(cfg config.ServerConfig, log *zap.Logger, version string, startedAt tim
 	mux.Handle("/v1/kv/", kvHandler)
 
 	documentService := docservice.New(store)
-	documentHandler := handlers.NewDocumentHandler(documentService)
+	documentHandler := handlers.NewDocumentHandler(documentService, clusterManager)
 	mux.Handle("/v1/documents", documentHandler)
 	mux.Handle("/v1/documents/", documentHandler)
 

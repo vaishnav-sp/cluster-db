@@ -33,7 +33,14 @@ func New(mgr *manager.Manager) *Service {
 // Create assigns a new ULID, embeds it as "_id", and stores the document as JSON.
 func (s *Service) Create(ctx context.Context, doc document.Document) (string, error) {
 	id := document.NewID()
+	if err := s.CreateWithID(ctx, id, doc); err != nil {
+		return "", err
+	}
+	return id, nil
+}
 
+// CreateWithID stores a document using the supplied ID.
+func (s *Service) CreateWithID(ctx context.Context, id string, doc document.Document) error {
 	stored := make(document.Document, len(doc)+1)
 	for k, v := range doc {
 		stored[k] = v
@@ -42,7 +49,7 @@ func (s *Service) Create(ctx context.Context, doc document.Document) (string, er
 
 	jsonBytes, err := json.Marshal(stored)
 	if err != nil {
-		return "", fmt.Errorf("document service: marshal document: %w", err)
+		return fmt.Errorf("document service: marshal document: %w", err)
 	}
 
 	rec := storage.Record{
@@ -50,11 +57,10 @@ func (s *Service) Create(ctx context.Context, doc document.Document) (string, er
 		Value: storage.Value(jsonBytes),
 	}
 	if err := s.manager.Put(ctx, rec); err != nil {
-		return "", fmt.Errorf("document service: create: %w", err)
+		return fmt.Errorf("document service: create: %w", err)
 	}
 	s.indexes.IndexDocument(id, stored)
-
-	return id, nil
+	return nil
 }
 
 // Get loads a document by id from storage.

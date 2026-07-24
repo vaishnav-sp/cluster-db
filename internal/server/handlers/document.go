@@ -1,26 +1,33 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/vaishnav-sp/cluster-db/internal/cluster"
 	"github.com/vaishnav-sp/cluster-db/internal/document"
 	docservice "github.com/vaishnav-sp/cluster-db/internal/document/service"
+	"github.com/vaishnav-sp/cluster-db/internal/document/sharding"
 	"github.com/vaishnav-sp/cluster-db/internal/storage"
 )
 
 // DocumentHandler handles JSON document REST operations via the document service.
 type DocumentHandler struct {
-	service *docservice.Service
+	service        *docservice.Service
+	clusterManager *cluster.Manager
 }
 
 // NewDocumentHandler creates a document handler backed by the document service.
-func NewDocumentHandler(service *docservice.Service) *DocumentHandler {
-	return &DocumentHandler{service: service}
+func NewDocumentHandler(service *docservice.Service, clusterManager *cluster.Manager) *DocumentHandler {
+	return &DocumentHandler{service: service, clusterManager: clusterManager}
 }
 
 // ServeHTTP routes document requests under /v1/documents.
@@ -76,9 +83,37 @@ func (h *DocumentHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		h.writeDocumentValidationError(w, err)
 		return
 	}
+	if forwardedID := r.Header.Get("X-Cluster-Document-ID"); forwardedID != "" {
+		if err := h.service.CreateWithID(r.Context(), forwardedID, doc); err != nil {
+			h.writeDocumentStorageError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusCreated, map[string]string{"id": forwardedID})
+		return
+	}
 
-	id, err := h.service.Create(r.Context(), doc)
+	id := document.NewID()
+	owner, local, err := h.documentRoute(id)
 	if err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	stored := make(document.Document, len(doc)+1)
+	for field, value := range doc {
+		stored[field] = value
+	}
+	stored["_id"] = id
+	forwardBody, err := json.Marshal(stored)
+	if err != nil {
+		h.writeDocumentValidationError(w, err)
+		return
+	}
+	if !local {
+		h.forwardDocumentRequest(w, r, owner, http.MethodPost, "/v1/documents", forwardBody, id)
+		return
+	}
+
+	if err := h.service.CreateWithID(r.Context(), id, doc); err != nil {
 		h.writeDocumentStorageError(w, err)
 		return
 	}
@@ -87,6 +122,16 @@ func (h *DocumentHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DocumentHandler) handleGet(w http.ResponseWriter, r *http.Request, id string) {
+	owner, local, err := h.documentRoute(id)
+	if err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	if !local {
+		h.forwardDocumentRequest(w, r, owner, http.MethodGet, "/v1/documents/"+url.PathEscape(id), nil, "")
+		return
+	}
+
 	doc, err := h.service.Get(r.Context(), id)
 	if err != nil {
 		h.writeDocumentStorageError(w, err)
@@ -180,7 +225,60 @@ func isSupportedAggregate(aggregate string) bool {
 	}
 }
 
+func (h *DocumentHandler) documentRoute(id string) (cluster.Node, bool, error) {
+	if h.clusterManager == nil {
+		return cluster.Node{}, true, nil
+	}
+
+	owner, ok := sharding.ShardOwner(h.clusterManager, id)
+	if !ok {
+		return cluster.Node{}, false, fmt.Errorf("no owner node found on consistent hash ring")
+	}
+	return owner, h.clusterManager.IsLocalNode(owner.ID), nil
+}
+
+func (h *DocumentHandler) forwardDocumentRequest(w http.ResponseWriter, r *http.Request, owner cluster.Node, method, path string, body []byte, id string) {
+	if owner.Status != cluster.Alive {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": fmt.Sprintf("owner node %s is unavailable (status: %v)", owner.ID, owner.Status)})
+		return
+	}
+
+	request, err := http.NewRequestWithContext(r.Context(), method, "http://"+owner.Address+path, bytes.NewReader(body))
+	if err != nil {
+		WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "document forwarding failed"})
+		return
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if id != "" {
+		request.Header.Set("X-Cluster-Document-ID", id)
+	}
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "document forwarding failed"})
+		return
+	}
+	defer response.Body.Close()
+	for key, values := range response.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(w, response.Body)
+}
+
 func (h *DocumentHandler) handleDelete(w http.ResponseWriter, r *http.Request, id string) {
+	owner, local, err := h.documentRoute(id)
+	if err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	if !local {
+		h.forwardDocumentRequest(w, r, owner, http.MethodDelete, "/v1/documents/"+url.PathEscape(id), nil, "")
+		return
+	}
+
 	exists, err := h.service.Exists(r.Context(), id)
 	if err != nil {
 		h.writeDocumentStorageError(w, err)

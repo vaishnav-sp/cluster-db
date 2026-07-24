@@ -8,9 +8,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/vaishnav-sp/cluster-db/internal/cluster"
 	"github.com/vaishnav-sp/cluster-db/internal/config"
 	docservice "github.com/vaishnav-sp/cluster-db/internal/document/service"
 	"github.com/vaishnav-sp/cluster-db/internal/storage"
@@ -33,7 +35,7 @@ func setupDocumentHandlerTest(t *testing.T) (*DocumentHandler, *manager.Manager)
 	})
 
 	svc := docservice.New(store)
-	return NewDocumentHandler(svc), store
+	return NewDocumentHandler(svc, nil), store
 }
 
 func newDocumentRequest(method, path string, body []byte, contentType string) *http.Request {
@@ -111,6 +113,89 @@ func TestDocumentHandlerPostValidDocument(t *testing.T) {
 	}
 	if stored["name"] != "Alice" {
 		t.Fatalf("stored name = %v", stored["name"])
+	}
+}
+
+func TestDocumentHandlerLocalShardRouting(t *testing.T) {
+	store, err := manager.New(config.StorageConfig{Engine: "memory"}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	if err := store.Open(context.Background()); err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close(context.Background())
+
+	membership := cluster.NewMembership()
+	membership.AddNode(cluster.Node{ID: "local", Address: "local", Status: cluster.Alive})
+	clusterManager := cluster.NewManager(membership, zap.NewNop(), time.Second, time.Second, "local", "local")
+	service := docservice.New(store)
+	handler := NewDocumentHandler(service, clusterManager)
+
+	id := createDocumentViaHandler(t, handler, `{"city":"Chennai"}`)
+	if _, err := service.Get(context.Background(), id); err != nil {
+		t.Fatalf("local routed document was not stored locally: %v", err)
+	}
+}
+
+func TestDocumentHandlerRemoteShardRouting(t *testing.T) {
+	remoteStore, err := manager.New(config.StorageConfig{Engine: "memory"}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("create remote store: %v", err)
+	}
+	if err := remoteStore.Open(context.Background()); err != nil {
+		t.Fatalf("open remote store: %v", err)
+	}
+	defer remoteStore.Close(context.Background())
+
+	remoteMembership := cluster.NewMembership()
+	remoteMembership.AddNode(cluster.Node{ID: "remote", Status: cluster.Alive})
+	remoteManager := cluster.NewManager(remoteMembership, zap.NewNop(), time.Second, time.Second, "remote", "")
+	remoteService := docservice.New(remoteStore)
+	remoteHandler := NewDocumentHandler(remoteService, remoteManager)
+	remoteServer := httptest.NewServer(remoteHandler)
+	defer remoteServer.Close()
+
+	remoteAddress := strings.TrimPrefix(remoteServer.URL, "http://")
+	remoteMembership.AddNode(cluster.Node{ID: "remote", Address: remoteAddress, Status: cluster.Alive})
+
+	localStore, err := manager.New(config.StorageConfig{Engine: "memory"}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("create local store: %v", err)
+	}
+	if err := localStore.Open(context.Background()); err != nil {
+		t.Fatalf("open local store: %v", err)
+	}
+	defer localStore.Close(context.Background())
+
+	originMembership := cluster.NewMembership()
+	originMembership.AddNode(cluster.Node{ID: "remote", Address: remoteAddress, Status: cluster.Alive})
+	originManager := cluster.NewManager(originMembership, zap.NewNop(), time.Second, time.Second, "origin", "")
+	originHandler := NewDocumentHandler(docservice.New(localStore), originManager)
+
+	id := createDocumentViaHandler(t, originHandler, `{"city":"Chennai"}`)
+	if _, err := remoteService.Get(context.Background(), id); err != nil {
+		t.Fatalf("remote routed document was not stored remotely: %v", err)
+	}
+	if _, err := localStore.Get(context.Background(), storage.Key(id)); err == nil {
+		t.Fatal("remote routed document was unexpectedly stored locally")
+	}
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/v1/documents/"+id, nil)
+	getRecorder := httptest.NewRecorder()
+	originHandler.ServeHTTP(getRecorder, getRequest)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("remote GET status = %d, body = %q", getRecorder.Code, getRecorder.Body.String())
+	}
+
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/v1/documents/"+id, nil)
+	deleteRecorder := httptest.NewRecorder()
+	originHandler.ServeHTTP(deleteRecorder, deleteRequest)
+	if deleteRecorder.Code != http.StatusNoContent {
+		t.Fatalf("remote DELETE status = %d, body = %q", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	if _, err := remoteService.Get(context.Background(), id); err == nil {
+		t.Fatal("remote routed document still exists after DELETE")
 	}
 }
 
